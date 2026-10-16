@@ -4,7 +4,7 @@ Multi-tenant tracking of AI API spend, built on Postgres row-level security.
 Import usage from Anthropic and OpenAI, price it, cap it weekly per team, and
 find out which paid seats nobody is using.
 
-[![CI](https://github.com/platonic-canine-lover/ai-usage-and-cost-tracker/actions/workflows/ci.yml/badge.svg)](https://github.com/platonic-canine-lover/ai-usage-and-cost-tracker/actions/workflows/ci.yml)
+[![CI](https://github.com/platonic-canine-lover/AI-usage-and-cost-tracker/actions/workflows/ci.yml/badge.svg)](https://github.com/platonic-canine-lover/AI-usage-and-cost-tracker/actions/workflows/ci.yml)
 
 ## Why this exists
 
