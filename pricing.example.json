@@ -1,0 +1,12 @@
+{
+  "_comment": "USD per million tokens. Copy to pricing.json and fill in from the providers' current pricing pages; these numbers are placeholders, not quotes. Keys match by longest prefix, so 'claude-sonnet-5-5' covers dated snapshots like 'claude-sonnet-5-5-20260601'.",
+  "anthropic": {
+    "claude-opus-5-5":   { "input_per_million_usd": 0, "cached_input_per_million_usd": 0, "output_per_million_usd": 0 },
+    "claude-sonnet-5-5": { "input_per_million_usd": 0, "cached_input_per_million_usd": 0, "output_per_million_usd": 0 },
+    "claude-haiku-5-5":  { "input_per_million_usd": 0, "cached_input_per_million_usd": 0, "output_per_million_usd": 0 }
+  },
+  "openai": {
+    "gpt-5":      { "input_per_million_usd": 0, "cached_input_per_million_usd": 0, "output_per_million_usd": 0 },
+    "gpt-5-mini": { "input_per_million_usd": 0, "cached_input_per_million_usd": 0, "output_per_million_usd": 0 }
+  }
+}

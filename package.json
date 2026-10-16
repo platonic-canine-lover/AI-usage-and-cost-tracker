@@ -1,0 +1,40 @@
+{
+  "name": "ai-usage-and-cost-tracker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Track AI API spend per team with Postgres row-level security, provider importers, weekly budget caps and a seat-use report.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@10.28.0",
+  "scripts": {
+    "migrate": "tsx scripts/migrate.ts",
+    "db:reset": "tsx scripts/reset.ts",
+    "cli": "tsx src/cli.ts",
+    "report": "tsx src/cli.ts report",
+    "test": "vitest run",
+    "test:unit": "vitest run test/unit",
+    "test:db": "vitest run test/db",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "check": "pnpm typecheck && pnpm lint && pnpm test"
+  },
+  "dependencies": {
+    "commander": "^13.1.0",
+    "csv-parse": "^5.6.0",
+    "dotenv": "^16.4.7",
+    "pg": "^8.13.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "eslint": "^9.17.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.1",
+    "vitest": "^2.1.8"
+  }
+}
