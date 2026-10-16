@@ -45,7 +45,7 @@ beforeAll(async () => {
   expect(again).toEqual({ inserted: 0, updated: 3, unmappedPrincipals: [] });
 
   // Weekly cap of $10 for the team; seats for Oct 2026 and Oct 2025.
-  await db.query("insert into budgets (team_id, weekly_cap_micro_usd) values ($1, $2)", [team, 10 * MICRO]);
+  await db.query("insert into budgets (team_id, weekly_cap_micro_usd) values ($1, $2)", [team, 9 * MICRO]);
   await db.query(
     `insert into seats (team_id, user_id, provider, monthly_cost_micro_usd, active_from) values
        ($1, $2, 'anthropic', $5, '2026-10-01'),
@@ -100,6 +100,16 @@ describe("import ownership and provenance", () => {
     expect(res.rows[0]!.pricing_version).toBe("test-v1");
   });
 
+  it("stores the tier and bucket each row was priced on, and a note where the figure is approximate", async () => {
+    const haiku = await db.query<{ service_tier: string; context_window: string; pricing_note: string | null; cost_micro_usd: string }>(
+      "select service_tier, context_window, pricing_note, cost_micro_usd::text from usage_events where model = 'claude-haiku-5-5'",
+    );
+    expect(haiku.rows[0]).toMatchObject({ service_tier: "batch", context_window: "0-200k", cost_micro_usd: String(2_250_000) });
+    expect(haiku.rows[0]!.pricing_note).toMatch(/straddles the 100000-token price break/);
+    const clean = await db.query<{ n: string }>("select count(*) as n from usage_events where pricing_note is null");
+    expect(Number(clean.rows[0]!.n)).toBe(4);
+  });
+
   it("keeps an append-only snapshot of every pricing configuration, keyed by content hash", async () => {
     const pricing = await loadPricing(path.join(fixtures, "pricing.test.json"));
     const snap = await db.query<{ version: string; config: { version: string } }>(
@@ -122,10 +132,10 @@ describe("weekly budget report", () => {
       [team],
     );
     // Anthropic fixture: sonnet (1.2M*$2 + 0.1M cache write*$2.5 + 0.8M cache read*$0.2 + 0.3M*$10)/1M = $5.81
-    //                  + opus (50k*$10 + 20k*$50)/1M = $1.50 + haiku (4M*$0.5 + 1M*$2.5)/1M = $4.50 → $11.81
+    //                  + opus (50k*$10 + 20k*$50)/1M = $1.50 + haiku on the BATCH tier (4M*$0.5 + 1M*$2.5)/1M × 0.5 = $2.25 → $9.56
     const oct2026 = rows.rows.find((r) => r.week_start === "2026-10-05");
     expect(oct2026).toBeDefined();
-    expect(oct2026!.spend_micro_usd).toBe(String(11_810_000));
+    expect(oct2026!.spend_micro_usd).toBe(String(9_560_000));
     expect(oct2026!.over_cap).toBe(true);
 
     // OpenAI fixture is Oct 2025: gpt-5-mini (1.5M*$1 + 0.5M*$0.1 + 0.4M*$4)/1M = $3.15 + gpt-5 (90k*$5 + 30k*$20)/1M = $1.05 → $4.20
@@ -148,7 +158,7 @@ describe("seat-use report", () => {
     expect(anthropicOct).toMatchObject({ paid_seats: 3, active_users: 2, idle_seats: 1, over_subscribed: false });
     expect(anthropicOct!.seat_cost_full_month_micro_usd).toBe(String(60 * MICRO));
     expect(anthropicOct!.seat_cost_prorated_micro_usd).toBe(String(60 * MICRO)); // all three seats active the whole month
-    expect(anthropicOct!.usage_cost_micro_usd).toBe(String(11_810_000));
+    expect(anthropicOct!.usage_cost_micro_usd).toBe(String(9_560_000));
     expect(anthropicOct!.unattributed_cost_micro_usd).toBe("0");
     expect(Number(anthropicOct!.attribution_coverage)).toBe(1);
   });

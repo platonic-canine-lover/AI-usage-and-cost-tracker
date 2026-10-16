@@ -4,7 +4,11 @@
   "anthropic": {
     "claude-opus-5-5":   { "input_per_million_usd": "10", "cache_write_per_million_usd": "12.5", "cache_write_extended_per_million_usd": "20", "cache_read_per_million_usd": "1", "output_per_million_usd": "50" },
     "claude-sonnet-5-5": { "input_per_million_usd": "2", "cache_write_per_million_usd": "2.5", "cache_write_extended_per_million_usd": "4", "cache_read_per_million_usd": "0.2", "output_per_million_usd": "10" },
-    "claude-haiku-5-5":  { "input_per_million_usd": "0.5", "output_per_million_usd": "2.5" }
+    "claude-haiku-5-5":  {
+      "input_per_million_usd": "0.5", "output_per_million_usd": "2.5",
+      "long_context": { "from_tokens": 100000, "input_per_million_usd": "2.5", "output_per_million_usd": "12.5" },
+      "service_tiers": { "batch": "0.5", "priority": "1.25" }
+    }
   },
   "openai": {
     "gpt-5":      { "input_per_million_usd": "5", "cache_read_per_million_usd": "0.5", "output_per_million_usd": "20" },

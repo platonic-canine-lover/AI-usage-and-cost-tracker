@@ -33,6 +33,18 @@ export interface UsageRecord {
   principal: string | null;
   tokens: TokenBreakdown;
   occurredAt: Date;
+  /**
+   * The provider's service tier as exported ("standard", "batch", "priority",
+   * "flex", ...), or null when the export was not grouped by it. Batch is
+   * billed at a discount and priority at a premium, so pricing needs it.
+   */
+  serviceTier: string | null;
+  /**
+   * The provider's context-window bucket as exported ("0-200k", "200k-1M"),
+   * or null when not grouped by it or the provider has no such field.
+   * Long prompts are billed at a higher rate, so pricing needs it too.
+   */
+  contextWindow: string | null;
 }
 
 /** Maps provider principals (api key ids, account ids, project ids) to user uuids in this system. */

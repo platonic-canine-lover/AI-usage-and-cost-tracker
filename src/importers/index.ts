@@ -102,8 +102,9 @@ export async function upsertUsage(
         `insert into usage_events
            (team_id, user_id, provider, model, external_id,
             input_tokens, cache_write_tokens, cache_write_extended_tokens, cached_tokens, output_tokens,
-            cost_micro_usd, pricing_version, pricing_hash, occurred_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            cost_micro_usd, pricing_version, pricing_hash, occurred_at,
+            service_tier, context_window, pricing_note)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
          on conflict (provider, external_id) do update set
            user_id                     = excluded.user_id,
            input_tokens                = excluded.input_tokens,
@@ -114,6 +115,9 @@ export async function upsertUsage(
            cost_micro_usd              = excluded.cost_micro_usd,
            pricing_version             = excluded.pricing_version,
            pricing_hash                = excluded.pricing_hash,
+           service_tier                = excluded.service_tier,
+           context_window              = excluded.context_window,
+           pricing_note                = excluded.pricing_note,
            imported_at                 = now()
          where usage_events.team_id = excluded.team_id
          returning (xmax = 0) as inserted`,
@@ -132,6 +136,9 @@ export async function upsertUsage(
           opts.pricing?.version ?? null,
           opts.pricing?.hash ?? null,
           r.occurredAt.toISOString(),
+          r.serviceTier,
+          r.contextWindow,
+          r.pricingNote,
         ],
       );
       if (res.rowCount === 0) {

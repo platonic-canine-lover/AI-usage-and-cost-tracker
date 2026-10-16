@@ -56,6 +56,11 @@ for (const provider of ["anthropic", "openai"] as const satisfies readonly Provi
     .requiredOption("--pricing <path>", "pricing table JSON (see pricing.example.json)")
     .option("--principals <path>", "JSON map of provider api key / account ids to user uuids")
     .option("--allow-unknown-models", "import unknown models at zero cost instead of failing", false)
+    .option(
+      "--allow-ungrouped",
+      "if the export was not grouped by service_tier / context_window, price at the standard tier and base rate and flag the rows instead of failing",
+      false,
+    )
     .option("--allow-partial", "import an export whose last page has has_more=true instead of failing", false)
     .action(
       async (opts: {
@@ -64,13 +69,17 @@ for (const provider of ["anthropic", "openai"] as const satisfies readonly Provi
         pricing: string;
         principals?: string;
         allowUnknownModels: boolean;
+        allowUngrouped: boolean;
         allowPartial: boolean;
       }) => {
         const teamId = assertUuid(opts.team);
         const json: unknown = JSON.parse(await readFile(opts.file, "utf8"));
         const records = parsers[provider](json, { allowPartial: opts.allowPartial });
         const table = await loadPricing(opts.pricing);
-        const { priced, unknownModels, pricingVersion, pricingHash } = priceRecords(table, records, { allowUnknownModels: opts.allowUnknownModels });
+        const { priced, unknownModels, flagged, pricingVersion, pricingHash } = priceRecords(table, records, {
+          allowUnknownModels: opts.allowUnknownModels,
+          allowUngrouped: opts.allowUngrouped,
+        });
         const principalMap = opts.principals ? PrincipalMapSchema.parse(JSON.parse(await readFile(opts.principals, "utf8"))) : {};
 
         const summary = await withDb((db) =>
@@ -82,6 +91,7 @@ for (const provider of ["anthropic", "openai"] as const satisfies readonly Provi
         );
         if (opts.allowPartial) console.warn("WARNING --allow-partial set: pagination was not verified; this import may not cover the whole period");
         if (unknownModels.length) console.warn(`unpriced models (cost recorded as $0): ${unknownModels.join(", ")}`);
+        if (flagged) console.warn(`${flagged} row(s) priced approximately; see usage_events.pricing_note (select ... where pricing_note is not null)`);
         if (summary.unmappedPrincipals.length)
           console.warn(`principals with no user mapping (user_id left null): ${summary.unmappedPrincipals.join(", ")}`);
       },

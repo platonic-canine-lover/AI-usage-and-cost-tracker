@@ -5,7 +5,13 @@
   "anthropic": {
     "claude-opus-5-5":   { "input_per_million_usd": "0", "cache_write_per_million_usd": "0", "cache_write_extended_per_million_usd": "0", "cache_read_per_million_usd": "0", "output_per_million_usd": "0" },
     "claude-sonnet-5-5": { "input_per_million_usd": "0", "cache_write_per_million_usd": "0", "cache_write_extended_per_million_usd": "0", "cache_read_per_million_usd": "0", "output_per_million_usd": "0" },
-    "claude-haiku-5-5":  { "input_per_million_usd": "0", "cache_write_per_million_usd": "0", "cache_write_extended_per_million_usd": "0", "cache_read_per_million_usd": "0", "output_per_million_usd": "0" }
+    "claude-haiku-5-5":  {
+      "input_per_million_usd": "0", "cache_write_per_million_usd": "0", "cache_write_extended_per_million_usd": "0", "cache_read_per_million_usd": "0", "output_per_million_usd": "0",
+      "_long_context_comment": "Haiku 5.5 lists a second, higher rate set for prompts over 100,000 tokens; copy it here. The export's 0-200k bucket straddles that break and is flagged (see README rule 5).",
+      "long_context": { "from_tokens": 100000, "input_per_million_usd": "0", "cache_write_per_million_usd": "0", "cache_write_extended_per_million_usd": "0", "cache_read_per_million_usd": "0", "output_per_million_usd": "0" },
+      "_service_tiers_comment": "Multipliers on the whole line per service_tier value in the export. Batch is published as 50% off; priority is a premium you must look up. A tier in the export with no entry here fails the import.",
+      "service_tiers": { "standard": "1", "batch": "0.5" }
+    }
   },
   "openai": {
     "gpt-5":      { "input_per_million_usd": "0", "cache_write_per_million_usd": "0", "cache_write_extended_per_million_usd": "0", "cache_read_per_million_usd": "0", "output_per_million_usd": "0" },

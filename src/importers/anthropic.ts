@@ -13,6 +13,11 @@
  *   cacheRead           = cache_read_input_tokens
  *   output              = output_tokens
  *
+ * service_tier and context_window are carried through to pricing: batch is
+ * discounted, priority is not, and long prompts cost more. Request the report
+ * with group_by[]=service_tier&group_by[]=context_window or the importer
+ * refuses to price a model whose rates depend on them.
+ *
  * Not covered: server_tool_use (web search requests) is a per-request charge,
  * not a token one, and is not imported. It is listed so nobody assumes it is.
  */
@@ -88,6 +93,8 @@ export function parseAnthropicUsage(json: unknown, opts: { allowPartial?: boolea
             output: r.output_tokens,
           },
           occurredAt: new Date(bucket.starting_at),
+          serviceTier: r.service_tier ?? null,
+          contextWindow: r.context_window ?? null,
         });
       }
     }

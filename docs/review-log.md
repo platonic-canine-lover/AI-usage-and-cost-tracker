@@ -64,6 +64,16 @@ source; the report prints the basis and warns when anything is unmeasured.
 | --- | --- |
 | `combinedCost()` divided the month's cloud spend by the task outcomes recorded that month, which is only valid if those records are the whole workload; five representative tasks do not license dividing the bill by five | `workload_attestations` table (migration 000700) and `cli task attest --month --complete`: an explicit, per team/provider/model/month statement that the recorded outcomes cover the full workload. Without it the TOTAL is suppressed and the report lists what is missing; the attestation text appears in the figure's basis. Withdrawable with `--incomplete`. |
 
+## Review 6 → commit 9
+
+| Finding | Change |
+| --- | --- |
+| The pricing file had one rate per model, but Anthropic's usage export carries `service_tier` and `context_window`, and the importer only used them to build the row id. Haiku 5.5 charges five times as much per token above 100,000 tokens and batch requests are half price, so long prompts were priced at a fifth of their cost and batch at double. | Pricing is now a function of (model, context bucket, service tier). A model entry may carry `long_context` (a second rate set from a token threshold) and `service_tiers` (multipliers). Rows store `service_tier`, `context_window` and a `pricing_note` (migration 000800). An export not grouped by those fields is refused for a tiered model unless `--allow-ungrouped`, which prices at the base rate and flags the rows. A tier with no multiplier fails the import, so batch is never silently priced at full rate. |
+| The export's context buckets (`0-200k`, `200k-1M`) do not line up with Haiku 5.5's 100k price break. | `200k-1M` gets the long-context rates. `0-200k` is priced at the base rate and the row's `pricing_note` says prompts over 100k inside it are under-priced. The import summary counts flagged rows. The gap cannot be closed from the usage export, and the README says so rather than rounding it off. |
+
+The reviewer also raised the model id `claude-haiku-5-5`. It is current; the
+reviewer's model list was out of date. The pricing example still names it.
+
 ## What was not done, on purpose
 
 - No reconciliation against a real provider invoice. The README says so.

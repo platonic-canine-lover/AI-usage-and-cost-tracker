@@ -89,6 +89,9 @@ export function parseOpenAiUsage(json: unknown, opts: { allowPartial?: boolean }
             output: r.output_tokens,
           },
           occurredAt: new Date(bucket.start_time * 1000),
+          // OpenAI exports batch as a boolean beside service_tier; fold it into one tier name.
+          serviceTier: r.batch === true ? "batch" : r.batch === false ? (r.service_tier ?? "default") : (r.service_tier ?? null),
+          contextWindow: null,
         });
       }
     }

@@ -87,6 +87,27 @@ Three rules keep the numbers trustworthy, and each has a test:
    Every row records the pricing `version` label and the file's content hash,
    and the full configuration is kept in `pricing_snapshots` keyed by hash,
    so a reused label cannot make a historical figure unreproducible.
+4. **Priced by tier and context bucket, not by model alone.** A rate depends
+   on the model, the service tier (batch is discounted, priority is a
+   premium) and how long the prompt was (Haiku 5.5 charges five times as
+   much per token above 100,000). A model entry in the pricing file can carry
+   `long_context` (a second rate set and the token count it starts at) and
+   `service_tiers` (multipliers). The importer stores the export's
+   `service_tier` and `context_window` on each row and prices with them. A
+   model priced this way needs the export grouped by both
+   (`group_by[]=service_tier&group_by[]=context_window`); an ungrouped export
+   fails unless `--allow-ungrouped`, which prices at the base rate and
+   standard tier and flags the rows. A tier in the export with no multiplier
+   in the file fails the import; "batch" is never priced at full rate because
+   nobody wrote down the discount.
+5. **Where the export is coarser than the price list, the row says so.**
+   Anthropic's usage export buckets context as `0-200k` and `200k-1M`; Haiku
+   5.5's price break is at 100k. The `200k-1M` bucket is priced at the
+   long-context rates. The `0-200k` bucket cannot be split at 100k from the
+   export, so it is priced at the base rate and the row's `pricing_note`
+   records that prompts over 100k inside it are under-priced. The import
+   summary counts flagged rows; `select ... where pricing_note is not null`
+   lists them. A number that might be wrong is labelled, not rounded off.
 
 ## Quick start
 
@@ -240,6 +261,7 @@ How it is worked out, and what it will not do:
 | --- | --- |
 | Import Anthropic and OpenAI usage exports | Implemented |
 | Per-category pricing with exact decimal parsing, integer money, content-hashed audit snapshots | Implemented; not reconciled against a provider invoice |
+| Pricing by service tier (batch, priority) and context bucket (long-context rates), with rows flagged where the export is coarser than the price break | Implemented; the 100k-to-200k gap for Haiku 5.5 cannot be closed from the usage export |
 | Weekly cap report, exit code for pipelines | Implemented, **retrospective** |
 | Seat-use report with attribution coverage and full-month / prorated seat cost estimates | Implemented; estimates, not invoice figures |
 | Team-scoped row-level security | Implemented and tested; not yet adversarially reviewed by a third party |

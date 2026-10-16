@@ -3,7 +3,18 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { assertComplete, IncompleteExportError, parseAnthropicUsage } from "../../src/importers/anthropic.js";
 import { parseOpenAiUsage } from "../../src/importers/openai.js";
-import { costMicroUsd, findPrice, loadPricing, priceRecords, UnknownModelError, UnpricedCategoryError } from "../../src/pricing.js";
+import {
+  costMicroUsd,
+  findPrice,
+  loadPricing,
+  parseContextBucket,
+  priceRecords,
+  resolveRates,
+  UngroupedExportError,
+  UnknownModelError,
+  UnpricedCategoryError,
+  UnpricedServiceTierError,
+} from "../../src/pricing.js";
 import type { TokenBreakdown } from "../../src/types.js";
 
 const fixtures = path.resolve(import.meta.dirname, "../fixtures");
@@ -238,5 +249,86 @@ describe("export completeness", () => {
     const page = await complete();
     expect(parseAnthropicUsage({ ...page, has_more: true }, { allowPartial: true })).toHaveLength(3);
     expect(parseAnthropicUsage([], { allowPartial: true })).toHaveLength(0);
+  });
+});
+
+describe("pricing: service tier and context window", () => {
+  const haiku = async () => (await loadPricing(path.join(fixtures, "pricing.test.json"))).anthropic["claude-haiku-5-5"]!;
+  const ctx = { provider: "anthropic" as const, model: "claude-haiku-5-5" };
+  const line = (serviceTier: string | null, contextWindow: string | null) => ({ serviceTier, contextWindow });
+  const million = tokens({ uncachedInput: 1_000_000, output: 1_000_000 }); // $3.00 at the base rate
+
+  it("importers carry the tier and bucket through from the export", async () => {
+    const [sonnet, , haikuRow] = parseAnthropicUsage(await load("anthropic-usage-report.json"));
+    expect(sonnet).toMatchObject({ serviceTier: "standard", contextWindow: "0-200k" });
+    expect(haikuRow).toMatchObject({ serviceTier: "batch", contextWindow: "0-200k" });
+    const [openai] = parseOpenAiUsage(await load("openai-completions-usage.json"));
+    expect(openai).toMatchObject({ serviceTier: "default", contextWindow: null });
+  });
+
+  it("batch is half price, priority is the listed premium, standard is 1", async () => {
+    const p = await haiku();
+    const std = resolveRates(p, line("standard", "0-200k"), ctx);
+    const batch = resolveRates(p, line("batch", "0-200k"), ctx);
+    const prio = resolveRates(p, line("priority", "0-200k"), ctx);
+    expect(costMicroUsd(std.rates, million, ctx, std.multiplier)).toBe(3_000_000n);
+    expect(costMicroUsd(batch.rates, million, ctx, batch.multiplier)).toBe(1_500_000n);
+    expect(costMicroUsd(prio.rates, million, ctx, prio.multiplier)).toBe(3_750_000n);
+  });
+
+  it("a bucket wholly above the price break gets the long-context rates", async () => {
+    const p = await haiku();
+    const r = resolveRates(p, line("standard", "200k-1M"), ctx);
+    expect(r.note).toBeNull();
+    expect(costMicroUsd(r.rates, million, ctx, r.multiplier)).toBe(15_000_000n); // 5x
+  });
+
+  it("a bucket that straddles the break is priced at the base rate and says so", async () => {
+    const p = await haiku(); // break at 100k; Anthropic's bucket is 0-200k
+    const r = resolveRates(p, line("standard", "0-200k"), ctx);
+    expect(costMicroUsd(r.rates, million, ctx, r.multiplier)).toBe(3_000_000n);
+    expect(r.note).toMatch(/0-200k straddles the 100000-token price break.*under-priced/);
+    // a model whose break lines up with the bucket edge has nothing to flag
+    const aligned = { ...p, long_context: { ...p.long_context!, from_tokens: 200_000 } };
+    expect(resolveRates(aligned, line("standard", "0-200k"), ctx).note).toBeNull();
+    expect(resolveRates(aligned, line("standard", "200k-1M"), ctx).rates).toBe(aligned.long_context);
+  });
+
+  it("an export not grouped by tier or bucket is refused for a tiered model unless allowed, and then flagged", async () => {
+    const p = await haiku();
+    expect(() => resolveRates(p, line("standard", null), ctx)).toThrow(UngroupedExportError);
+    expect(() => resolveRates(p, line(null, "200k-1M"), ctx)).toThrow(UngroupedExportError);
+    const r = resolveRates(p, line(null, null), ctx, { allowUngrouped: true });
+    expect(r.multiplier).toBe(1_000_000n);
+    expect(r.rates).toBe(p);
+    expect(r.note).toMatch(/not grouped by context_window/);
+    expect(r.note).toMatch(/not grouped by service_tier/);
+  });
+
+  it("a tier with no multiplier in the file fails the import rather than being priced as standard", async () => {
+    const p = await haiku();
+    expect(() => resolveRates(p, line("flex", "0-200k"), ctx)).toThrow(UnpricedServiceTierError);
+    // a model with no tiers at all still refuses an unknown tier: "batch" at full price would be wrong too
+    const table = await loadPricing(path.join(fixtures, "pricing.test.json"));
+    const sonnet = table.anthropic["claude-sonnet-5-5"]!;
+    expect(() => resolveRates(sonnet, line("batch", "0-200k"), { ...ctx, model: "claude-sonnet-5-5" })).toThrow(UnpricedServiceTierError);
+    expect(resolveRates(sonnet, line("standard", null), { ...ctx, model: "claude-sonnet-5-5" }).note).toBeNull();
+  });
+
+  it("priceRecords applies all of it and counts the flagged rows", async () => {
+    const table = await loadPricing(path.join(fixtures, "pricing.test.json"));
+    const records = parseAnthropicUsage(await load("anthropic-usage-report.json"));
+    const { priced, flagged } = priceRecords(table, records);
+    const haikuRow = priced.find((r) => r.model === "claude-haiku-5-5")!;
+    expect(haikuRow.costMicroUsd).toBe(2_250_000n); // (4M*$0.5 + 1M*$2.5) × 0.5 batch
+    expect(haikuRow.pricingNote).toMatch(/straddles/);
+    expect(flagged).toBe(1); // sonnet and opus have no long_context entry, so nothing to flag there
+  });
+
+  it("parses the provider's bucket labels", () => {
+    expect(parseContextBucket("0-200k")).toEqual([0, 200_000]);
+    expect(parseContextBucket("200k-1M")).toEqual([200_000, 1_000_000]);
+    expect(parseContextBucket("0-100k")).toEqual([0, 100_000]);
+    expect(parseContextBucket("long")).toBeUndefined();
   });
 });
