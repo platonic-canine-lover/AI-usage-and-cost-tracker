@@ -121,11 +121,22 @@ export async function taskCountsByMonth(db: Queryable, teamId?: string): Promise
   return new Map(res.rows.map((r) => [`${r.team_id}|${r.provider}|${r.model}|${r.month_start}`, r.n]));
 }
 
+/** Months attested as completely recorded, keyed "team|provider|model|YYYY-MM-01". */
+export async function workloadAttestations(db: Queryable, teamId?: string): Promise<Set<string>> {
+  const res = await db.query<{ team_id: string; provider: string; model: string; month_start: string }>(
+    `select team_id, provider::text as provider, model, month_start::text
+       from workload_attestations where complete and ($1::uuid is null or team_id = $1)`,
+    [teamId ?? null],
+  );
+  return new Set(res.rows.map((r) => `${r.team_id}|${r.provider}|${r.model}|${r.month_start}`));
+}
+
 export function localAlternativeReport(
   volumes: MonthlyVolume[],
   alt: AlternativesFile,
   quality = new Map<string, TaskQuality>(),
   taskCounts = new Map<string, number>(),
+  attested = new Set<string>(),
 ): LocalEstimate[] {
   const out: LocalEstimate[] = [];
   for (const v of volumes) {
@@ -137,6 +148,7 @@ export function localAlternativeReport(
             localQuality: quality.get(`${v.teamId}|local|${model.id}`),
             cloudQuality: quality.get(`${v.teamId}|${v.provider}|${v.model}`),
             cloudTasksInMonth: taskCounts.get(`${v.teamId}|${v.provider}|${v.model}|${v.monthStart}`),
+            workloadAttested: attested.has(`${v.teamId}|${v.provider}|${v.model}|${v.monthStart}`),
           }),
         );
       }
@@ -190,7 +202,9 @@ export function renderLocal(estimates: LocalEstimate[]): string {
               `  [${h.combined.basis.join("; ")}]`,
           );
         } else {
-          lines.push("    TOTAL  not computed: needs cloud task outcomes recorded in this month and review data for both sides");
+          lines.push(
+            "    TOTAL  not computed: needs (1) cloud task outcomes recorded for this month, (2) `cli task attest` that they are the complete workload, (3) review data for both sides",
+          );
         }
       }
     } else {

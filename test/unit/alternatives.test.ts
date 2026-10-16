@@ -170,6 +170,7 @@ describe("local alternative estimate", () => {
     const local = humanSide({ attempts: 10, accepted: 5, avgReviewMinutes: 20, avgRetries: 1, acceptanceRate: 0.5 }, 60); // $20/attempt
     const c = combinedCost({
       tasksInMonth: 20,
+      workloadAttested: true,
       cloudCostMicroUsd: 200_000_000n, // $200 → $10 per task
       localDedicatedMicroUsd: 110_000_000n, // $110 → $5.50 per task, ×2 for local retries (1+1)/(1+0) = $11
       localSharedMicroUsd: 22_000_000n, // $22 → $1.10 per task, ×2 = $2.20
@@ -179,14 +180,16 @@ describe("local alternative estimate", () => {
     expect(c.cloudPerAcceptedMicroUsd).toBe(15_000_000n); // ($10 + $5) / 1.0
     expect(c.localDedicatedPerAcceptedMicroUsd).toBe(62_000_000n); // ($11 + $20) / 0.5
     expect(c.localSharedPerAcceptedMicroUsd).toBe(44_400_000n); // ($2.20 + $20) / 0.5
-    expect(c.basis).toEqual(["20 cloud task(s) recorded this month", "cloud review recorded", "local review recorded"]);
+    expect(c.basis).toEqual(["20 cloud task(s) recorded this month, attested as the complete workload", "cloud review recorded", "local review recorded"]);
 
     // No recorded cloud tasks this month → no figure.
-    expect(combinedCost({ tasksInMonth: 0, cloudCostMicroUsd: 1n, localDedicatedMicroUsd: 1n, localSharedMicroUsd: 1n, cloud, local })).toBeNull();
+    expect(combinedCost({ tasksInMonth: 0, workloadAttested: true, cloudCostMicroUsd: 1n, localDedicatedMicroUsd: 1n, localSharedMicroUsd: 1n, cloud, local })).toBeNull();
+    // Recorded tasks but nobody has attested they are the whole workload → no figure (a sample of 5 does not divide a month's bill).
+    expect(combinedCost({ tasksInMonth: 5, workloadAttested: false, cloudCostMicroUsd: 1n, localDedicatedMicroUsd: 1n, localSharedMicroUsd: 1n, cloud, local })).toBeNull();
     // A side with no review data → no figure.
-    expect(combinedCost({ tasksInMonth: 5, cloudCostMicroUsd: 1n, localDedicatedMicroUsd: 1n, localSharedMicroUsd: 1n, cloud, local: humanSide(undefined, 60) })).toBeNull();
+    expect(combinedCost({ tasksInMonth: 5, workloadAttested: true, cloudCostMicroUsd: 1n, localDedicatedMicroUsd: 1n, localSharedMicroUsd: 1n, cloud, local: humanSide(undefined, 60) })).toBeNull();
     // Assumed review time is allowed and flagged, but unknown acceptance makes that side null.
-    const assumed = combinedCost({ tasksInMonth: 5, cloudCostMicroUsd: 50_000_000n, localDedicatedMicroUsd: 1n, localSharedMicroUsd: 1n, cloud, local: humanSide(undefined, 60, 10) })!;
+    const assumed = combinedCost({ tasksInMonth: 5, workloadAttested: true, cloudCostMicroUsd: 50_000_000n, localDedicatedMicroUsd: 1n, localSharedMicroUsd: 1n, cloud, local: humanSide(undefined, 60, 10) })!;
     expect(assumed.basis).toContain("local review ASSUMED");
     expect(assumed.localDedicatedPerAcceptedMicroUsd).toBeNull();
     expect(assumed.cloudPerAcceptedMicroUsd).toBe(15_000_000n);
@@ -196,7 +199,8 @@ describe("local alternative estimate", () => {
     const human = { hourly_usd: 60, rates: [], fx_usd_per: {} };
     const q = { attempts: 4, accepted: 4, avgReviewMinutes: 5, avgRetries: 0, acceptanceRate: 1 };
     expect(estimateLocal(volume, model, machine, {}, { human, localQuality: q, cloudQuality: q }).human[0]!.combined).toBeNull();
-    const withCount = estimateLocal(volume, model, machine, {}, { human, localQuality: q, cloudQuality: q, cloudTasksInMonth: 10 });
+    expect(estimateLocal(volume, model, machine, {}, { human, localQuality: q, cloudQuality: q, cloudTasksInMonth: 10 }).human[0]!.combined).toBeNull();
+    const withCount = estimateLocal(volume, model, machine, {}, { human, localQuality: q, cloudQuality: q, cloudTasksInMonth: 10, workloadAttested: true });
     // cloud: $200/10 + $5 = $25; local dedicated: $110.35/10 + $5 = $16.035
     expect(withCount.human[0]!.combined!.cloudPerAcceptedMicroUsd).toBe(25_000_000n);
     expect(withCount.human[0]!.combined!.localDedicatedPerAcceptedMicroUsd).toBe(16_035_000n);

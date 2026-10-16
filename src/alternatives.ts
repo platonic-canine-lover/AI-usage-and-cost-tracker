@@ -157,6 +157,8 @@ export interface MonthlyVolume {
 export interface CombinedCost {
   /** Number of cloud tasks recorded in this month; the unit the month's cost is divided by. */
   tasksInMonth: number;
+  /** Someone has attested that those recorded tasks are the complete workload the month's spend paid for. */
+  workloadAttested: true;
   /** Which inputs were recorded and which assumed; shown with the figure. */
   basis: string[];
   cloudPerAcceptedMicroUsd: bigint | null;
@@ -259,8 +261,10 @@ export function humanSide(quality: TaskQuality | undefined, hourlyUsd: number, d
 /**
  * Estimated total cost per accepted result, machine plus human.
  *
- * Fair only when the month's cloud tasks were recorded (so the month's cost
- * can be divided into tasks) and both sides have review data. The month's
+ * Fair only when the month's cloud tasks were recorded, someone has attested
+ * that those records are the complete workload the month's spend paid for
+ * (a sample of five tasks does not license dividing the whole bill by five),
+ * and both sides have review data. Otherwise null, and the report says why. The month's
  * cloud cost already contains every retry that happened in the cloud; the
  * local machine component is rescaled by (1 + local retries) / (1 + cloud
  * retries) because the local model's retry rate is its own. Per-accepted =
@@ -270,6 +274,7 @@ export function humanSide(quality: TaskQuality | undefined, hourlyUsd: number, d
 export function combinedCost(
   args: {
     tasksInMonth: number;
+    workloadAttested: boolean;
     cloudCostMicroUsd: bigint;
     localDedicatedMicroUsd: bigint;
     localSharedMicroUsd: bigint;
@@ -279,8 +284,9 @@ export function combinedCost(
 ): CombinedCost | null {
   const { tasksInMonth, cloud, local } = args;
   if (tasksInMonth <= 0) return null;
+  if (!args.workloadAttested) return null;
   if (cloud.basis === "none" || local.basis === "none") return null;
-  const basis: string[] = [`${tasksInMonth} cloud task(s) recorded this month`];
+  const basis: string[] = [`${tasksInMonth} cloud task(s) recorded this month, attested as the complete workload`];
   basis.push(cloud.basis === "recorded" ? `cloud review ${cloud.basis}` : `cloud review ASSUMED`);
   basis.push(local.basis === "recorded" ? `local review ${local.basis}` : `local review ASSUMED`);
 
@@ -301,7 +307,7 @@ export function combinedCost(
   const localShared = perAccepted(localMachine(args.localSharedMicroUsd), local);
   if (cloud.acceptanceRate === null) basis.push("cloud acceptance unknown → cloud figure null");
   if (local.acceptanceRate === null) basis.push("local acceptance unknown → local figure null");
-  return { tasksInMonth, basis, cloudPerAcceptedMicroUsd: cloudPer, localDedicatedPerAcceptedMicroUsd: localDed, localSharedPerAcceptedMicroUsd: localShared };
+  return { tasksInMonth, workloadAttested: true, basis, cloudPerAcceptedMicroUsd: cloudPer, localDedicatedPerAcceptedMicroUsd: localDed, localSharedPerAcceptedMicroUsd: localShared };
 }
 
 export function memoryCheck(model: LocalModel, machine: Machine): LocalEstimate["memory"] {
@@ -333,6 +339,8 @@ export function estimateLocal(
     cloudQuality?: TaskQuality | undefined;
     /** Cloud task outcomes recorded in this volume's month, for this provider/model. */
     cloudTasksInMonth?: number | undefined;
+    /** An attestation exists that those outcomes are the complete workload for the month. */
+    workloadAttested?: boolean | undefined;
   } = {},
 ): LocalEstimate {
   const promptTps = machine.prompt_tokens_per_sec.value;
@@ -405,6 +413,7 @@ export function estimateLocal(
           const cloud = humanSide(opts.cloudQuality, r.hourlyUsd, opts.human!.default_review_minutes_per_task);
           const combined = combinedCost({
             tasksInMonth: opts.cloudTasksInMonth ?? 0,
+            workloadAttested: opts.workloadAttested ?? false,
             cloudCostMicroUsd: volume.cloudCostMicroUsd,
             localDedicatedMicroUsd: energyCostMicroUsd + hardwareDedicatedMicroUsd,
             localSharedMicroUsd: energyCostMicroUsd + hardwareProratedMicroUsd,

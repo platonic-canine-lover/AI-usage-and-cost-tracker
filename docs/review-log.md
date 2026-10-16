@@ -3,7 +3,7 @@
 This repository was built in one day, 16 October 2026, as a series of
 commits, each one a response to an independent code review of the previous
 state. The reviewer inspected the code and tests but could not run them;
-every commit below was verified locally (typecheck, lint, 72 tests against
+every commit below was verified locally (typecheck, lint, 73 tests against
 Postgres 16) before it was handed back. The log is here because the
 corrections say more about the engineering than the first draft does.
 
@@ -58,6 +58,12 @@ source; the report prints the basis and warns when anything is unmeasured.
 | One hourly rate is not a universal value for human time | `human.rates`: named rates in USD, GBP or EUR with a sourced FX figure. Example carries the UK National Living Wage (£12.71 from April 2026, GOV.UK) and a user-supplied £17/h engineer figure flagged as unverified. |
 | Machine and human costs were shown separately, leaving the reader to add them | `TOTAL` line: estimated cost per accepted result, machine plus human, cloud vs local (dedicated and shared), computed only when the month's cloud tasks were recorded and both sides have review data, with every assumption listed beside the figure. |
 
+## Review 5 → commit 8
+
+| Finding | Fix |
+| --- | --- |
+| `combinedCost()` divided the month's cloud spend by the task outcomes recorded that month, which is only valid if those records are the whole workload; five representative tasks do not license dividing the bill by five | `workload_attestations` table (migration 000700) and `cli task attest --month --complete`: an explicit, per team/provider/model/month statement that the recorded outcomes cover the full workload. Without it the TOTAL is suppressed and the report lists what is missing; the attestation text appears in the figure's basis. Withdrawable with `--incomplete`. |
+
 ## What was not done, on purpose
 
 - No reconciliation against a real provider invoice. The README says so.
@@ -66,5 +72,5 @@ source; the report prints the basis and warns when anything is unmeasured.
 - The Mac mini throughput, KV-cache size and GBP/USD figures in the example
   are labelled placeholders until measured on the actual machine.
 
-After commit 7 the reviewer's advice was to measure and then stop adding
+After commit 8 the reviewer's advice was to verify, measure and stop adding
 features. That is the plan.

@@ -284,4 +284,34 @@ describe("local alternative report: months and human time", () => {
     expect(counts.get(`${team}|anthropic|claude-haiku-5-5|${thisMonth}`)).toBe(1);
     expect(counts.get(`${team}|local|qwen3.8-27b-q4_k_m|${thisMonth}`)).toBe(2);
   });
+
+  it("workload attestations are per month and scoped by RLS; only admins can write them", async () => {
+    const { workloadAttestations } = await import("../../src/reports/local.js");
+    expect((await workloadAttestations(db, team)).size).toBe(0);
+    await asUser(db, owner, (tx) =>
+      tx.query(
+        `insert into workload_attestations (team_id, provider, model, month_start, complete) values ($1, 'anthropic', 'claude-haiku-5-5', '2026-10-01', true)`,
+        [team],
+      ),
+    );
+    expect(await workloadAttestations(db, team)).toEqual(new Set([`${team}|anthropic|claude-haiku-5-5|2026-10-01`]));
+    // withdrawing it removes the month from the set
+    await asUser(db, owner, (tx) =>
+      tx.query("update workload_attestations set complete = false where team_id = $1", [team]),
+    );
+    expect((await workloadAttestations(db, team)).size).toBe(0);
+    // a month start that is not the 1st is rejected
+    await expect(
+      asServiceRole(db, (tx) =>
+        tx.query("insert into workload_attestations (team_id, provider, model, month_start, complete) values ($1, 'openai', 'x', '2026-10-15', true)", [team]),
+      ),
+    ).rejects.toThrow(/check constraint/);
+    // the other team cannot see or write
+    expect((await asUser(db, outsider, (tx) => tx.query("select 1 from workload_attestations"))).rowCount).toBe(0);
+    await expect(
+      asUser(db, outsider, (tx) =>
+        tx.query("insert into workload_attestations (team_id, provider, model, month_start, complete) values ($1, 'openai', 'x', '2026-10-01', true)", [team]),
+      ),
+    ).rejects.toThrow(/row-level security/);
+  });
 });

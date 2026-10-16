@@ -8,6 +8,7 @@
  *   pnpm report seats     [--team <uuid>] [--months 6]
  *   pnpm report local     --alternatives alternatives.json [--team <uuid>] [--months 3] [--include-current]
  *   pnpm cli task record  --team <uuid> --model local:qwen3.8-27b-q4_k_m --task "weekly digest" --review-minutes 12 --accepted
+ *   pnpm cli task attest  --team <uuid> --model anthropic:claude-haiku-5-5 --month 2026-09 --complete
  *   pnpm cli team create --name "Platform" [--budget 250]
  *
  * All commands connect with DATABASE_URL. They are server-side tools, so they
@@ -27,7 +28,7 @@ import { parsers, upsertUsage } from "./importers/index.js";
 import { formatUsd, loadPricing, priceRecords, sumMicroUsd } from "./pricing.js";
 import { loadAlternatives } from "./alternatives.js";
 import { assertUuid, assertWindow, renderSeats, renderWeekly, seatUseReport, weeklyBudgetReport } from "./reports/index.js";
-import { localAlternativeReport, monthlyVolumes, renderLocal, taskCountsByMonth, taskQuality } from "./reports/local.js";
+import { localAlternativeReport, monthlyVolumes, renderLocal, taskCountsByMonth, taskQuality, workloadAttestations } from "./reports/local.js";
 import type { Provider } from "./types.js";
 
 const PrincipalMapSchema = z.record(z.string().min(1), z.string().uuid());
@@ -125,12 +126,13 @@ report
   .action(async (opts: { alternatives: string; team?: string; months: string; includeCurrent: boolean; json: boolean }) => {
     const alt = await loadAlternatives(opts.alternatives);
     const teamId = opts.team ? assertUuid(opts.team) : undefined;
-    const { volumes, quality, counts } = await withDb(async (db) => ({
+    const { volumes, quality, counts, attested } = await withDb(async (db) => ({
       volumes: await monthlyVolumes(db, { ...(teamId && { teamId }), months: assertWindow(Number(opts.months), "months", 120), includeCurrent: opts.includeCurrent }),
       quality: await taskQuality(db, teamId),
       counts: await taskCountsByMonth(db, teamId),
+      attested: await workloadAttestations(db, teamId),
     }));
-    const estimates = localAlternativeReport(volumes, alt, quality, counts);
+    const estimates = localAlternativeReport(volumes, alt, quality, counts, attested);
     console.log(
       opts.json
         ? JSON.stringify(estimates, (_k, v: unknown) => (typeof v === "bigint" ? v.toString() : v), 2)
@@ -171,6 +173,34 @@ task
       return res.rows[0]!.id;
     });
     console.log(id);
+  });
+
+task
+  .command("attest")
+  .description("State whether the task outcomes recorded for a month are the complete workload that month's cloud spend paid for; the combined TOTAL is suppressed without this")
+  .requiredOption("--team <uuid>")
+  .requiredOption("--model <id>", "provider:model, e.g. anthropic:claude-haiku-5-5")
+  .requiredOption("--month <YYYY-MM>")
+  .option("--complete", "every task in the month was recorded", false)
+  .option("--incomplete", "only a sample was recorded (withdraws a previous attestation)", false)
+  .option("--user <uuid>", "who is attesting")
+  .option("--note <text>")
+  .action(async (opts: { team: string; model: string; month: string; complete: boolean; incomplete: boolean; user?: string; note?: string }) => {
+    const teamId = assertUuid(opts.team);
+    const m = /^(anthropic|openai):(.+)$/.exec(opts.model);
+    if (!m) throw new RangeError(`--model must be provider:model with provider anthropic or openai (attestations are about cloud months), got "${opts.model}"`);
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(opts.month)) throw new RangeError(`--month must be YYYY-MM, got "${opts.month}"`);
+    if (opts.complete === opts.incomplete) throw new RangeError("pass exactly one of --complete or --incomplete");
+    await withDb((db) =>
+      db.query(
+        `insert into workload_attestations (team_id, provider, model, month_start, complete, note, attested_by)
+         values ($1, $2, $3, $4::date, $5, $6, $7)
+         on conflict (team_id, provider, model, month_start) do update set
+           complete = excluded.complete, note = excluded.note, attested_by = excluded.attested_by, attested_at = now()`,
+        [teamId, m[1], m[2], `${opts.month}-01`, opts.complete, opts.note ?? null, opts.user ? assertUuid(opts.user, "user id") : null],
+      ),
+    );
+    console.log(`${opts.model} ${opts.month}: ${opts.complete ? "attested complete" : "marked incomplete"}`);
   });
 
 const team = program.command("team").description("Manage teams (server-side)");
