@@ -157,9 +157,12 @@ with 32 GB, with a source on every figure.
   local time  3.9 days of 31.0 days available  (13% utilisation)  [throughput estimate: 19 prompt tok/s, 8 gen tok/s]
   local cost  $39.02 dedicated ($2.93 energy + $36.08 hardware/month), $7.45 if shared (hardware prorated by utilisation)
   memory      weights 17 GB + KV cache 4.1 GB at 32768 tokens + overhead 1.5 GB fit in 26 GB [KV figure: estimate]
-  human       at $60/h (machine time above excludes this)
-    local  30 min review/attempt → $30.00/attempt, $60.00/accepted result (50% accepted, 0.5 retries avg) [recorded, 2 attempts]
-    cloud  5 min review/attempt → $5.00/attempt, $5.00/accepted result (100% accepted, 0 retries avg) [recorded, 1 attempts]
+  human       UK National Living Wage (21+): GBP 12.71/h ≈ $16.52/h [fx estimate] (machine time above excludes this)
+    local  30 min review/attempt → $8.26/attempt, $16.52/accepted result (50% accepted, 0.5 retries avg) [recorded, 2 attempts]
+    cloud  5 min review/attempt → $1.38/attempt, $1.38/accepted result (100% accepted, 0 retries avg) [recorded, 1 attempts]
+  human       Median UK engineer (user-supplied figure): GBP 17/h ≈ $22.10/h [fx estimate] (machine time above excludes this)
+    local  30 min review/attempt → $11.05/attempt, $22.10/accepted result (50% accepted, 0.5 retries avg) [recorded, 2 attempts]
+    cloud  5 min review/attempt → $1.84/attempt, $1.84/accepted result (100% accepted, 0 retries avg) [recorded, 1 attempts]
   benchmarks  (local score / cloud score, both as published; not a probability)
     SWE-bench Pro                          61.7     vs cloud score not supplied
 ```
@@ -170,13 +173,19 @@ Three rules shape it:
   set against a full month of local running cost. `--include-current` adds
   the current month, labelled MONTH-TO-DATE, with available hours, idle
   energy and the hardware share all scaled to the elapsed days.
-- **Human time is a separate line, never folded into machine time.** Set
-  `human.hourly_usd` and record outcomes with `pnpm cli task record` (review
-  minutes, retries, accepted or rejected) for both the cloud model and the
-  local one. The report then shows review cost per attempt and per accepted
-  result for each, marked `recorded`; with no outcomes it shows `assumed` if
-  you set a default, otherwise "not recorded". A local model that is cheap per
-  token and expensive per finished task shows up as exactly that.
+- **Human time is a separate line, never folded into machine time, and it
+  is priced at every rate you list.** `human.rates` takes named hourly rates
+  in USD, GBP or EUR (with a sourced `fx_usd_per` for anything not in
+  dollars); the example lists the UK National Living Wage (£12.71 from April
+  2026, per GOV.UK) and a £17/h engineer figure, so the same month is shown
+  at both. Record outcomes with `pnpm cli task record` (review minutes,
+  retries, accepted or rejected) for both the cloud model and the local one.
+  The report then shows review cost per attempt and per accepted result for
+  each, marked `recorded`; with no outcomes it shows `assumed` if you set a
+  default, otherwise "not recorded". A local model that is cheap per token
+  and expensive per finished task shows up as exactly that, and whether the
+  gap matters depends on whose hour is being spent, which is why both rates
+  are there.
 - **The memory check says what it checked.** Weights alone give "weights fit;
   full-context feasibility unverified". Supply `kv_cache_gb_per_1k_tokens`
   (from llama.cpp's startup log, or 2 × layers × KV heads × head dim × bytes)

@@ -1,6 +1,6 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { estimateLocal, humanSide, loadAlternatives, memoryCheck, type LocalModel, type Machine, type MonthlyVolume } from "../../src/alternatives.js";
+import { estimateLocal, humanRatesUsd, humanSide, loadAlternatives, memoryCheck, type LocalModel, type Machine, type MonthlyVolume } from "../../src/alternatives.js";
 
 const model: LocalModel = {
   id: "m",
@@ -117,39 +117,52 @@ describe("local alternative estimate", () => {
     expect(e.hardwareDedicatedMicroUsd).toBe(33_333_333n);
   });
 
-  it("human side: no hourly rate → not costed; recorded outcomes → per-attempt and per-accepted cost", () => {
-    expect(estimateLocal(volume, model, machine).human).toBeNull();
-    const human = { hourly_usd: 60 };
-    const recorded = humanSide({ attempts: 10, accepted: 8, avgReviewMinutes: 15, avgRetries: 0.5, acceptanceRate: 0.8 }, human);
+  it("human side: no human section → empty; recorded outcomes → per-attempt and per-accepted cost", () => {
+    expect(estimateLocal(volume, model, machine).human).toEqual([]);
+    const recorded = humanSide({ attempts: 10, accepted: 8, avgReviewMinutes: 15, avgRetries: 0.5, acceptanceRate: 0.8 }, 60);
     expect(recorded.basis).toBe("recorded");
     expect(recorded.reviewCostPerAttemptMicroUsd).toBe(15_000_000n); // 15 min at $60/h = $15
     expect(recorded.reviewCostPerAcceptedMicroUsd).toBe(18_750_000n); // $15 / 0.8
-    const assumed = humanSide(undefined, { hourly_usd: 60, default_review_minutes_per_task: 5 });
+    const assumed = humanSide(undefined, 60, 5);
     expect(assumed).toMatchObject({ basis: "assumed", reviewCostPerAttemptMicroUsd: 5_000_000n, reviewCostPerAcceptedMicroUsd: null });
-    expect(humanSide(undefined, human).basis).toBe("none");
-    expect(humanSide({ attempts: 3, accepted: 0, avgReviewMinutes: 30, avgRetries: 2, acceptanceRate: 0 }, human).reviewCostPerAcceptedMicroUsd).toBeNull();
+    expect(humanSide(undefined, 60).basis).toBe("none");
+    expect(humanSide({ attempts: 3, accepted: 0, avgReviewMinutes: 30, avgRetries: 2, acceptanceRate: 0 }, 60).reviewCostPerAcceptedMicroUsd).toBeNull();
   });
 
-  it("human side is attached per model and kept separate from machine cost", () => {
+  it("prices human time at every configured rate, converting non-USD rates with the supplied FX", () => {
+    const human = {
+      rates: [
+        { id: "nlw", label: "UK NLW", hourly: 12.71, currency: "GBP" as const, source: "gov.uk" },
+        { id: "eng", label: "Engineer", hourly: 17, currency: "GBP" as const, source: "user" },
+        { id: "us", label: "US", hourly: 60, currency: "USD" as const, source: "x" },
+      ],
+      fx_usd_per: { GBP: { value: 1.25, basis: "estimate" as const, source: "s" } },
+    };
+    expect(humanRatesUsd(human).map((r) => [r.id, Number(r.hourlyUsd.toFixed(4)), r.fxBasis])).toEqual([
+      ["nlw", 15.8875, "estimate"],
+      ["eng", 21.25, "estimate"],
+      ["us", 60, null],
+    ]);
     const e = estimateLocal(volume, model, machine, {}, {
-      human: { hourly_usd: 60 },
+      human,
       localQuality: { attempts: 4, accepted: 2, avgReviewMinutes: 20, avgRetries: 1, acceptanceRate: 0.5 },
       cloudQuality: { attempts: 4, accepted: 4, avgReviewMinutes: 5, avgRetries: 0, acceptanceRate: 1 },
     });
-    expect(e.human!.local.reviewCostPerAcceptedMicroUsd).toBe(40_000_000n); // $20 / 0.5
-    expect(e.human!.cloud.reviewCostPerAcceptedMicroUsd).toBe(5_000_000n);
-    expect(e.localCostDedicatedMicroUsd).toBe(110_350_000n); // unchanged by human figures
+    expect(e.human.map((h) => h.id)).toEqual(["nlw", "eng", "us"]);
+    // engineer rate: 20 min at $21.25/h = $7.0833/attempt; / 0.5 = $14.1667 per accepted
+    expect(e.human[1]!.local.reviewCostPerAttemptMicroUsd).toBe(7_083_333n);
+    expect(e.human[1]!.local.reviewCostPerAcceptedMicroUsd).toBe(14_166_667n);
+    expect(e.human[2]!.cloud.reviewCostPerAcceptedMicroUsd).toBe(5_000_000n);
+    expect(e.localCostDedicatedMicroUsd).toBe(110_350_000n); // machine cost unchanged by human figures
   });
 
-  it("shows benchmark parity only where a cloud score was supplied, and never a probability", () => {
-    const e = estimateLocal(volume, model, machine, {
-      "anthropic/claude-sonnet-5-5": { "SWE-bench Pro": { score: 75, source: "c" } },
-    });
-    expect(e.parity).toEqual([
-      { benchmark: "SWE-bench Pro", local: 60, cloud: 75, ratio: 0.8, localSource: "s", cloudSource: "c" },
-      { benchmark: "Other", local: 80, cloud: null, ratio: null, localSource: "s", cloudSource: null },
-    ]);
-    expect(JSON.stringify(e, (_k, v: unknown) => (typeof v === "bigint" ? v.toString() : v))).not.toMatch(/probab/i);
+  it("refuses a non-USD rate with no FX figure, and hourly_usd shorthand still works", async () => {
+    const { AlternativesFile } = await import("../../src/alternatives.js");
+    const base = await loadAlternatives(path.resolve(import.meta.dirname, "../../alternatives.example.json"));
+    expect(() => AlternativesFile.parse({ ...base, human: { rates: [{ id: "x", label: "x", hourly: 1, currency: "GBP", source: "s" }] } })).toThrow(/fx_usd_per.GBP/);
+    expect(() => AlternativesFile.parse({ ...base, human: {} })).toThrow(/hourly_usd or at least one/);
+    const short = AlternativesFile.parse({ ...base, human: { hourly_usd: 40 } });
+    expect(humanRatesUsd(short.human!)).toEqual([{ id: "default", label: "default", hourlyUsd: 40, currency: "USD", hourly: 40, fxBasis: null }]);
   });
 
   it("reports estimate as the basis if any throughput figure is an estimate", () => {

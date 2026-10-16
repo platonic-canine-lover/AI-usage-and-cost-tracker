@@ -158,10 +158,13 @@ export function renderLocal(estimates: LocalEstimate[]): string {
         `, ${formatUsd(e.localCostProratedMicroUsd)} if shared (hardware prorated by utilisation)`,
       `  memory      ${e.memory.verdict}`,
     );
-    if (e.human) {
-      lines.push(`  human       at $${e.human.hourlyUsd}/h (machine time above excludes this)`);
-      lines.push(humanLine("local", e.human.local));
-      lines.push(humanLine("cloud", e.human.cloud));
+    if (e.human.length) {
+      for (const h of e.human) {
+        const rate = h.currency === "USD" ? `$${h.hourly}/h` : `${h.currency} ${h.hourly}/h ≈ $${h.hourlyUsd.toFixed(2)}/h [fx ${h.fxBasis}]`;
+        lines.push(`  human       ${h.label}: ${rate} (machine time above excludes this)`);
+        lines.push(humanLine("local", h.local));
+        lines.push(humanLine("cloud", h.cloud));
+      }
     } else {
       lines.push("  human       not costed: set human.hourly_usd in the alternatives file to include review time");
     }

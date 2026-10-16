@@ -74,18 +74,56 @@ const Machine = z.object({
 });
 export type Machine = z.infer<typeof Machine>;
 
-const Human = z.object({
-  /** What an hour of the reviewer's time is worth. */
-  hourly_usd: z.number().nonnegative(),
-  /** Minutes a person spends per task when no task_outcomes are recorded for the model: a fallback assumption, labelled as such. */
-  default_review_minutes_per_task: z.number().nonnegative().optional(),
+const Currency = z.enum(["USD", "GBP", "EUR"]);
+
+/** A named hourly rate for the reviewer's time. The report prints one human block per rate, so you can see the answer at minimum wage and at an engineer's rate side by side. */
+const HumanRate = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  hourly: z.number().nonnegative(),
+  currency: Currency.default("USD"),
+  source: z.string().min(1),
+  note: z.string().optional(),
 });
-export type Human = z.infer<typeof Human>;
+export type HumanRate = z.infer<typeof HumanRate>;
+
+const HumanSchema = z
+  .object({
+    /** Single-rate shorthand; equivalent to one rate {id:"default", hourly: x, currency: "USD"}. */
+    hourly_usd: z.number().nonnegative().optional(),
+    rates: z.array(HumanRate).default([]),
+    /** USD per unit of each non-USD currency used in `rates`. Required for any such currency. Sourced, because it moves. */
+    fx_usd_per: z.record(Currency, Sourced).default({}),
+    /** Minutes a person spends per task when no task_outcomes are recorded for the model: a fallback assumption, labelled as such. */
+    default_review_minutes_per_task: z.number().nonnegative().optional(),
+  })
+  .superRefine((h, ctx) => {
+    if (h.hourly_usd === undefined && h.rates.length === 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "human needs hourly_usd or at least one entry in rates" });
+    }
+    for (const r of h.rates) {
+      if (r.currency !== "USD" && !h.fx_usd_per[r.currency]) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: `rate "${r.id}" is in ${r.currency} but fx_usd_per.${r.currency} is not set` });
+      }
+    }
+  });
+export type Human = z.infer<typeof HumanSchema>;
+
+/** Every configured rate, resolved to USD per hour, in file order. */
+export function humanRatesUsd(human: Human): { id: string; label: string; hourlyUsd: number; currency: string; hourly: number; fxBasis: string | null }[] {
+  const out: ReturnType<typeof humanRatesUsd> = [];
+  if (human.hourly_usd !== undefined) out.push({ id: "default", label: "default", hourlyUsd: human.hourly_usd, currency: "USD", hourly: human.hourly_usd, fxBasis: null });
+  for (const r of human.rates) {
+    const fx = r.currency === "USD" ? { value: 1, basis: null } : human.fx_usd_per[r.currency]!;
+    out.push({ id: r.id, label: r.label, hourlyUsd: r.hourly * fx.value, currency: r.currency, hourly: r.hourly, fxBasis: fx.basis });
+  }
+  return out;
+}
 
 export const AlternativesFile = z.object({
   version: z.string().min(1).optional(),
   as_of: z.string().optional(),
-  human: Human.optional(),
+  human: HumanSchema.optional(),
   local_models: z.array(LocalModel).min(1),
   machines: z.array(Machine).min(1),
   /** Published scores for the cloud models you use, keyed "provider/model-prefix", so the report can show parity. */
@@ -154,12 +192,17 @@ export interface LocalEstimate {
   localCostDedicatedMicroUsd: bigint;
   localCostProratedMicroUsd: bigint;
   cloudCostMicroUsd: bigint;
-  /** Human side, present only when a hourly rate is configured. Local and cloud are shown side by side, each marked recorded or assumed. */
+  /** One block per configured rate, empty when no human section is configured. Local and cloud side by side, each marked recorded, assumed or none. */
   human: {
+    id: string;
+    label: string;
     hourlyUsd: number;
+    currency: string;
+    hourly: number;
+    fxBasis: string | null;
     local: HumanSide;
     cloud: HumanSide;
-  } | null;
+  }[];
   throughputBasis: "measured" | "estimate" | "spec";
   parity: { benchmark: string; local: number; cloud: number | null; ratio: number | null; localSource: string; cloudSource: string | null }[];
 }
@@ -179,11 +222,10 @@ export interface HumanSide {
 const MICRO = 1_000_000;
 const toMicro = (usd: number): bigint => BigInt(Math.round(usd * MICRO));
 
-export function humanSide(quality: TaskQuality | undefined, human: Human | undefined): HumanSide {
+export function humanSide(quality: TaskQuality | undefined, hourlyUsd: number, defaultReviewMinutes?: number): HumanSide {
   const none: HumanSide = { basis: "none", attempts: 0, acceptanceRate: null, avgReviewMinutes: null, avgRetries: null, reviewCostPerAttemptMicroUsd: null, reviewCostPerAcceptedMicroUsd: null };
-  if (!human) return none;
   if (quality && quality.attempts > 0) {
-    const perAttempt = toMicro((quality.avgReviewMinutes / 60) * human.hourly_usd);
+    const perAttempt = toMicro((quality.avgReviewMinutes / 60) * hourlyUsd);
     return {
       basis: "recorded",
       attempts: quality.attempts,
@@ -191,12 +233,12 @@ export function humanSide(quality: TaskQuality | undefined, human: Human | undef
       avgReviewMinutes: quality.avgReviewMinutes,
       avgRetries: quality.avgRetries,
       reviewCostPerAttemptMicroUsd: perAttempt,
-      reviewCostPerAcceptedMicroUsd: quality.acceptanceRate > 0 ? toMicro(((quality.avgReviewMinutes / 60) * human.hourly_usd) / quality.acceptanceRate) : null,
+      reviewCostPerAcceptedMicroUsd: quality.acceptanceRate > 0 ? toMicro(((quality.avgReviewMinutes / 60) * hourlyUsd) / quality.acceptanceRate) : null,
     };
   }
-  if (human.default_review_minutes_per_task !== undefined) {
-    const perAttempt = toMicro((human.default_review_minutes_per_task / 60) * human.hourly_usd);
-    return { basis: "assumed", attempts: 0, acceptanceRate: null, avgReviewMinutes: human.default_review_minutes_per_task, avgRetries: null, reviewCostPerAttemptMicroUsd: perAttempt, reviewCostPerAcceptedMicroUsd: null };
+  if (defaultReviewMinutes !== undefined) {
+    const perAttempt = toMicro((defaultReviewMinutes / 60) * hourlyUsd);
+    return { basis: "assumed", attempts: 0, acceptanceRate: null, avgReviewMinutes: defaultReviewMinutes, avgRetries: null, reviewCostPerAttemptMicroUsd: perAttempt, reviewCostPerAcceptedMicroUsd: null };
   }
   return none;
 }
@@ -291,8 +333,12 @@ export function estimateLocal(
     localCostProratedMicroUsd: energyCostMicroUsd + hardwareProratedMicroUsd,
     cloudCostMicroUsd: volume.cloudCostMicroUsd,
     human: opts.human
-      ? { hourlyUsd: opts.human.hourly_usd, local: humanSide(opts.localQuality, opts.human), cloud: humanSide(opts.cloudQuality, opts.human) }
-      : null,
+      ? humanRatesUsd(opts.human).map((r) => ({
+          ...r,
+          local: humanSide(opts.localQuality, r.hourlyUsd, opts.human!.default_review_minutes_per_task),
+          cloud: humanSide(opts.cloudQuality, r.hourlyUsd, opts.human!.default_review_minutes_per_task),
+        }))
+      : [],
     throughputBasis: basis(),
     parity,
   };

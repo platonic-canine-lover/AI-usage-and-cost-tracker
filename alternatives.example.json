@@ -102,7 +102,32 @@
   "_comment_cloud_benchmarks": "Add the published scores for the cloud models you actually use, keyed provider/model-prefix, so the report can show parity. Left empty on purpose: the comparison article asserts the local model beats or trails specific Claude and GPT models on named benchmarks but does not print those models' scores, so there is nothing to copy without inventing it.",
   "_comment_price": "price_usd is the $899 US base price (https://www.techrepublic.com/article/news-mac-mini-m6-cheat-sheet/) plus a placeholder $400 for the 32 GB configure-to-order upgrade, which Apple had not published at the time; replace with what you paid.",
   "human": {
-    "hourly_usd": 60
+    "rates": [
+      {
+        "id": "uk-nlw",
+        "label": "UK National Living Wage (21+)",
+        "hourly": 12.71,
+        "currency": "GBP",
+        "source": "https://www.gov.uk/national-minimum-wage-rates",
+        "note": "Rate from April 2026; changes every 1 April."
+      },
+      {
+        "id": "uk-engineer-median",
+        "label": "Median UK engineer (user-supplied figure)",
+        "hourly": 17,
+        "currency": "GBP",
+        "source": "user-supplied, attributed to a Gemini answer",
+        "note": "Not independently verified. ONS ASHE publishes median hourly pay by occupation (SOC 2136 programmers and software development professionals); replace this with that figure and its URL."
+      }
+    ],
+    "fx_usd_per": {
+      "GBP": {
+        "value": 1.3,
+        "basis": "estimate",
+        "source": "set on the day from your bank or the ECB reference rate",
+        "note": "PLACEHOLDER. The report converts GBP rates to USD with this so human cost sits beside cloud cost in one currency."
+      }
+    }
   },
-  "_comment_human": "hourly_usd prices review and correction time. Record real outcomes with `pnpm cli task record` for both the cloud model and the local one; until there are any, set default_review_minutes_per_task to an assumption (it is labelled as assumed in the report) or leave it null to show 'not recorded'."
+  "_comment_human": "Human review time is priced at every rate listed, so the report shows the local-vs-cloud answer at minimum wage and at an engineer's rate side by side. Record real outcomes with `pnpm cli task record` for both models; until there are any, set default_review_minutes_per_task to an assumption (labelled assumed) or leave it out to show 'not recorded'. Non-USD rates need fx_usd_per.<currency>."
 }
