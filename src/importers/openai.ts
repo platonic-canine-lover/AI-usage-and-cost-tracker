@@ -6,10 +6,17 @@
  * `model`; the principal is `api_key_id`, falling back to `user_id`, then
  * `project_id`.
  *
- * Token mapping: OpenAI's `input_tokens` already includes cached tokens, so
- *   inputTokens  = input_tokens - input_cached_tokens
- *   cachedTokens = input_cached_tokens
- *   outputTokens = output_tokens
+ * Token mapping. OpenAI's `input_tokens` is the total and already includes
+ * cached and cache-write tokens, so the uncached figure is derived:
+ *   uncachedInput      = input_tokens - input_cached_tokens - cache writes
+ *   cacheWrite         = input_cache_write_tokens
+ *   cacheWriteExtended = input_cache_write_12h_tokens
+ *   cacheRead          = input_cached_tokens
+ *   output             = output_tokens
+ * Audio and image token sub-totals are not priced separately here; they are
+ * part of input_tokens / output_tokens and priced at the text rate. If a
+ * model bills them differently, give it its own pricing entry or treat the
+ * figure as an estimate.
  */
 import { z } from "zod";
 import type { UsageRecord } from "../types.js";
@@ -19,6 +26,8 @@ const Result = z.object({
   object: z.literal("organization.usage.completions.result").optional(),
   input_tokens: z.number().int().nonnegative().default(0),
   input_cached_tokens: z.number().int().nonnegative().default(0),
+  input_cache_write_tokens: z.number().int().nonnegative().default(0),
+  input_cache_write_12h_tokens: z.number().int().nonnegative().default(0),
   output_tokens: z.number().int().nonnegative().default(0),
   num_model_requests: z.number().int().nonnegative().optional(),
   project_id: z.string().nullable().optional(),
@@ -52,7 +61,12 @@ export function parseOpenAiUsage(json: unknown, opts: { allowPartial?: boolean }
     for (const bucket of page.data) {
       for (const r of bucket.results) {
         if (!r.model) throw new Error(`OpenAI usage bucket at ${bucket.start_time} has no model; request the report with group_by[]=model`);
-        const cached = Math.min(r.input_cached_tokens, r.input_tokens);
+        const uncached = r.input_tokens - r.input_cached_tokens - r.input_cache_write_tokens - r.input_cache_write_12h_tokens;
+        if (uncached < 0) {
+          throw new Error(
+            `OpenAI usage bucket at ${bucket.start_time}: cached and cache-write tokens exceed input_tokens for ${r.model}; refusing to guess`,
+          );
+        }
         out.push({
           provider: "openai",
           model: r.model,
@@ -67,9 +81,13 @@ export function parseOpenAiUsage(json: unknown, opts: { allowPartial?: boolean }
             r.service_tier,
           ]),
           principal: r.api_key_id ?? r.user_id ?? r.project_id ?? null,
-          inputTokens: r.input_tokens - cached,
-          outputTokens: r.output_tokens,
-          cachedTokens: cached,
+          tokens: {
+            uncachedInput: uncached,
+            cacheWrite: r.input_cache_write_tokens,
+            cacheWriteExtended: r.input_cache_write_12h_tokens,
+            cacheRead: r.input_cached_tokens,
+            output: r.output_tokens,
+          },
           occurredAt: new Date(bucket.start_time * 1000),
         });
       }

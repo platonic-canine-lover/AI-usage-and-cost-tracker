@@ -54,7 +54,7 @@ export async function upsertUsage(
   teamId: string,
   records: PricedRecord[],
   principalMap: PrincipalMap = {},
-  opts: { pricingVersion?: string } = {},
+  opts: { pricing?: { version: string; hash: string; raw: unknown } } = {},
 ): Promise<ImportSummary> {
   const unmapped = new Set<string>();
   let inserted = 0;
@@ -64,6 +64,16 @@ export async function upsertUsage(
   try {
     const team = await client.query("select 1 from teams where id = $1", [teamId]);
     if (team.rowCount === 0) throw new UnknownTeamError(teamId);
+
+    // Audit record: the exact pricing configuration, keyed by content hash,
+    // so a reused version label can never make a historical figure unreproducible.
+    if (opts.pricing) {
+      await client.query(
+        `insert into pricing_snapshots (hash, version, config) values ($1, $2, $3)
+         on conflict (hash) do nothing`,
+        [opts.pricing.hash, opts.pricing.version, JSON.stringify(opts.pricing.raw)],
+      );
+    }
 
     if (records.length > 0) {
       const provider = records[0]!.provider;
@@ -90,17 +100,21 @@ export async function upsertUsage(
       // team is never updated. Zero rows back means a conflict slipped past.
       const res = await client.query<{ inserted: boolean }>(
         `insert into usage_events
-           (team_id, user_id, provider, model, external_id, input_tokens, output_tokens, cached_tokens,
-            cost_micro_usd, pricing_version, occurred_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+           (team_id, user_id, provider, model, external_id,
+            input_tokens, cache_write_tokens, cache_write_extended_tokens, cached_tokens, output_tokens,
+            cost_micro_usd, pricing_version, pricing_hash, occurred_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
          on conflict (provider, external_id) do update set
-           user_id         = excluded.user_id,
-           input_tokens    = excluded.input_tokens,
-           output_tokens   = excluded.output_tokens,
-           cached_tokens   = excluded.cached_tokens,
-           cost_micro_usd  = excluded.cost_micro_usd,
-           pricing_version = excluded.pricing_version,
-           imported_at     = now()
+           user_id                     = excluded.user_id,
+           input_tokens                = excluded.input_tokens,
+           cache_write_tokens          = excluded.cache_write_tokens,
+           cache_write_extended_tokens = excluded.cache_write_extended_tokens,
+           cached_tokens               = excluded.cached_tokens,
+           output_tokens               = excluded.output_tokens,
+           cost_micro_usd              = excluded.cost_micro_usd,
+           pricing_version             = excluded.pricing_version,
+           pricing_hash                = excluded.pricing_hash,
+           imported_at                 = now()
          where usage_events.team_id = excluded.team_id
          returning (xmax = 0) as inserted`,
         [
@@ -109,11 +123,14 @@ export async function upsertUsage(
           r.provider,
           r.model,
           r.externalId,
-          r.inputTokens,
-          r.outputTokens,
-          r.cachedTokens,
+          r.tokens.uncachedInput,
+          r.tokens.cacheWrite,
+          r.tokens.cacheWriteExtended,
+          r.tokens.cacheRead,
+          r.tokens.output,
           r.costMicroUsd.toString(),
-          opts.pricingVersion ?? null,
+          opts.pricing?.version ?? null,
+          opts.pricing?.hash ?? null,
           r.occurredAt.toISOString(),
         ],
       );

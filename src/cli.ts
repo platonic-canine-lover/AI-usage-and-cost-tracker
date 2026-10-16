@@ -65,14 +65,17 @@ for (const provider of ["anthropic", "openai"] as const satisfies readonly Provi
         const json: unknown = JSON.parse(await readFile(opts.file, "utf8"));
         const records = parsers[provider](json, { allowPartial: opts.allowPartial });
         const table = await loadPricing(opts.pricing);
-        const { priced, unknownModels, pricingVersion } = priceRecords(table, records, { allowUnknownModels: opts.allowUnknownModels });
+        const { priced, unknownModels, pricingVersion, pricingHash } = priceRecords(table, records, { allowUnknownModels: opts.allowUnknownModels });
         const principalMap = opts.principals ? PrincipalMapSchema.parse(JSON.parse(await readFile(opts.principals, "utf8"))) : {};
 
-        const summary = await withDb((db) => upsertUsage(db, teamId, priced, principalMap, { pricingVersion }));
-        console.log(
-          `${provider}: ${summary.inserted} inserted, ${summary.updated} updated, ${formatUsd(sumMicroUsd(priced))} total (pricing ${pricingVersion})`,
+        const summary = await withDb((db) =>
+          upsertUsage(db, teamId, priced, principalMap, { pricing: { version: pricingVersion, hash: pricingHash, raw: table.raw } }),
         );
-        if (opts.allowPartial) console.warn("--allow-partial set: this import may not cover the whole period");
+        console.log(
+          `${provider}: ${summary.inserted} inserted, ${summary.updated} updated, ${formatUsd(sumMicroUsd(priced))} total ` +
+            `(pricing ${pricingVersion}, ${pricingHash.slice(0, 19)})`,
+        );
+        if (opts.allowPartial) console.warn("WARNING --allow-partial set: pagination was not verified; this import may not cover the whole period");
         if (unknownModels.length) console.warn(`unpriced models (cost recorded as $0): ${unknownModels.join(", ")}`);
         if (summary.unmappedPrincipals.length)
           console.warn(`principals with no user mapping (user_id left null): ${summary.unmappedPrincipals.join(", ")}`);

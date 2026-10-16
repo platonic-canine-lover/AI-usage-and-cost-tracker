@@ -15,9 +15,9 @@ honestly (cache reads are not free, cache writes are not cheap), putting a cap
 on each week before the invoice arrived, and noticing that most of the seats
 we were paying for belonged to people who had not made a call all month.
 
-This repository is that process as code: small, tested, and safe to point at
-more than one team's data. It is a reporting foundation, not a finished
-cost-control service; the section "What this is and is not" draws the line.
+This repository is that process as code: an internal tool, small, tested,
+and safe to point at more than one team's data. It is a reporting foundation,
+not a product; the section "What this is and is not" draws the line.
 
 ## What it does
 
@@ -26,9 +26,9 @@ cost-control service; the section "What this is and is not" draws the line.
 | Versioned schema migrations, run from scratch in CI on local Supabase and on plain Postgres 15, 16 and 17 | `supabase/migrations/` | `.github/workflows/ci.yml` |
 | Row-level security: a member of team A cannot see, count, sum, write to or infer team B's spend | `20261016000200_row_level_security.sql` | `test/db/rls.team-isolation.test.ts` (10 cases) |
 | Importers for the Anthropic Admin usage report and the OpenAI completions usage API; idempotent on re-import, one owning team per record, truncated exports rejected | `src/importers/` | `test/unit/importers.test.ts`, `test/db/import-and-reports.test.ts` |
-| Pricing from a versioned config file in USD per million tokens, integer-only (BigInt) arithmetic, version stamped on every row | `src/pricing.ts`, `pricing.example.json` | unit tests |
+| Pricing per token category (input, cache write, extended cache write, cache read, output) from a config file; exact decimal parsing, BigInt arithmetic; version and content hash stamped on every row, full config kept in `pricing_snapshots` | `src/pricing.ts`, `pricing.example.json` | unit tests |
 | Weekly budget cap per team (retrospective), with an `over_cap` flag and a non-zero exit code for pipelines | `weekly_spend` view, `pnpm report weekly` | `test/db/import-and-reports.test.ts` |
-| Seat-use report: paid seats vs people who actually generated usage, per provider per month, with attribution coverage and over-subscription flagged | `seat_use` view, `pnpm report seats` | same |
+| Seat-use report: paid seats vs people who actually generated usage, per provider per month, with attribution coverage, over-subscription flagged, and both full-month and day-prorated seat cost estimates | `seat_use` view, `pnpm report seats` | same |
 
 ## The RLS guarantee
 
@@ -56,7 +56,7 @@ transaction with `SET LOCAL ROLE authenticated` and the user's JWT claims in
 pnpm test:db
 
  ✓ test/db/rls.team-isolation.test.ts (10 tests)
- ✓ test/db/import-and-reports.test.ts (12 tests)
+ ✓ test/db/import-and-reports.test.ts (14 tests)
 ```
 
 ## Import rules
@@ -71,16 +71,22 @@ Three rules keep the numbers trustworthy, and each has a test:
    pre-check is backed by a row-level guard on the upsert itself
    (`WHERE usage_events.team_id = excluded.team_id`), so a concurrent import
    racing past the check still touches nothing.
-2. **Whole exports only.** Both provider APIs paginate. If the last page you
-   pass has `has_more: true`, or a non-final page claims to be the last, the
-   import fails with `IncompleteExportError`. `--allow-partial` overrides it
-   and the summary says so. An incomplete cost report that looks complete is
+2. **Whole exports only, and they have to say so.** Both provider APIs
+   paginate. Every page you pass must carry `has_more`; every non-final page
+   must have `has_more: true` and a `next_page` cursor; the final page must
+   have `has_more: false` and no cursor. Anything else fails with
+   `IncompleteExportError`. `--allow-partial` overrides all of it and the
+   summary prints a warning. An incomplete cost report that looks complete is
    worse than no report.
-3. **Priced, or refused.** Unknown models fail the import unless
+3. **Priced per category, or refused.** Input, short cache writes, extended
+   cache writes, cache reads and output are stored and priced separately.
+   A known model with tokens in a category that has no rate in the pricing
+   file fails the import (`UnpricedCategoryError`): a cache write is never
+   silently priced at the input rate. Unknown models fail unless
    `--allow-unknown-models`, in which case they are imported at $0 and listed.
-   Every row records the `pricing_version` that produced its cost (declared in
-   the pricing file, or a content hash), so any report can say which price
-   list it was built from.
+   Every row records the pricing `version` label and the file's content hash,
+   and the full configuration is kept in `pricing_snapshots` keyed by hash,
+   so a reused label cannot make a historical figure unreproducible.
 
 ## Quick start
 
@@ -114,16 +120,16 @@ Example output on the committed fixtures:
 
 ```
 Week        Team                 Spend       Cap         Status
-2026-10-05  Platform             $11.76      $10.00      OVER CAP
+2026-10-05  Platform             $11.81      $10.00      OVER CAP
 2025-09-29  Platform             $4.20       $10.00      ok
 
-Month       Team                 Provider   Paid  Active  Idle  Seat cost   Usage cost  Per active  Coverage  Note
-2026-10-01  Platform             anthropic  3     2       1     $60.00      $11.76      $5.88       100%
-2025-10-01  Platform             openai     1     1       0     $30.00      $4.20       $3.15       50%       $1.05 unattributed
+Month       Team                 Provider   Paid  Active  Idle  Seats (full) Seats (pro)  Usage cost  Per active  Coverage  Note
+2026-10-01  Platform             anthropic  3     2       1     $60.00       $60.00       $11.81      $5.91       100%
+2025-10-01  Platform             openai     1     1       0     $30.00       $30.00       $4.20       $3.15       50%       $1.05 unattributed
 ```
 
 The anthropic line is the per-seat vs usage-based question as data: three paid
-seats, two people using them, and the active ones generating under six dollars
+seats, two people using them, and the active ones generating about six dollars
 of usage each. Usage per active seat a fraction of the seat price is the signal
 that a usage-based plan would cost less and ration nobody; usage climbing past
 the seat price is the signal to look at seats. The report gives you that
@@ -141,9 +147,9 @@ map, and the report says so on every row rather than clamping to zero.
 | Capability | Status |
 | --- | --- |
 | Import Anthropic and OpenAI usage exports | Implemented |
-| Configurable, versioned pricing; integer money | Implemented |
+| Per-category pricing with exact decimal parsing, integer money, content-hashed audit snapshots | Implemented; not reconciled against a provider invoice |
 | Weekly cap report, exit code for pipelines | Implemented, **retrospective** |
-| Seat-use report with attribution coverage | Implemented |
+| Seat-use report with attribution coverage and full-month / prorated seat cost estimates | Implemented; estimates, not invoice figures |
 | Team-scoped row-level security | Implemented and tested; not yet adversarially reviewed by a third party |
 | Fetching from the provider APIs on a schedule | Not implemented: you pass the JSON you fetched |
 | Live spend enforcement (blocking calls at the cap) | Not implemented, and out of scope here; it needs a check in the request path, not a report |
@@ -157,13 +163,25 @@ provider; this repository can supply the numbers it consults.
 
 - Money is `bigint` micro-USD. Provider prices run to fractions of a cent per
   token, and summing floats across a month's events drifts. Integers do not.
-- Cost maths is BigInt end to end: USD per million tokens is exactly micro-USD
-  per token, prices with decimals are carried at nano-USD precision, and each
-  line rounds half-up once. There is no float path and no safe-integer ceiling.
+- Cost maths has no floating-point step. Prices are parsed from their decimal
+  text (strings preferred; JSON numbers go through their shortest decimal
+  form) into integer pico-USD per token, which is exact for up to 6 decimal
+  places of USD per million tokens; more is rejected. Cost is tokens × rate
+  summed in BigInt and rounded half-up to micro-USD once per line. There is no
+  safe-integer ceiling.
 - Prices are not hard-coded. They change, and a stale constant silently wrongs
   every report. Reconciling the pricing file against a real invoice for each
-  model and service tier is a step you own; the `pricing_version` column tells
-  you which rows a correction would need to re-price.
+  model, service tier and cache tier is a step you own: this repository has
+  not been reconciled against a provider bill, and does not claim billing
+  accuracy. The `pricing_hash` column and `pricing_snapshots` table tell you
+  exactly which rows a correction would need to re-price, and with what.
+- Not priced: Anthropic server-side tool use (web search requests) and
+  OpenAI audio or image sub-totals, which are either per-request charges or
+  folded into the token totals at the text rate. The parsers document this.
+- Seat costs are estimates from the `seats` table, never invoice figures.
+  `seat_cost_full_month` charges every seat active at any point in the month
+  its full monthly price; `seat_cost_prorated` scales by active days. Pick
+  whichever matches how your provider bills; neither replaces the invoice.
 - Imports are idempotent on `(provider, external_id)`, where the id is a hash
   of the bucket and every group-by dimension. Re-running yesterday's export
   updates rather than double-counts, and only for the team that owns it.
@@ -183,7 +201,7 @@ provider; this repository can supply the numbers it consults.
 ## Layout
 
 ```
-supabase/migrations/   versioned SQL, applied in order
+supabase/migrations/   versioned SQL, applied in order (five so far; 000400 and 000500 are review follow-ups applied incrementally)
 scripts/               migrate.ts (plain Postgres runner), reset.ts, auth-shim.sql
 src/importers/         anthropic.ts, openai.ts, index.ts (upsert)
 src/pricing.ts         pricing table, micro-dollar maths

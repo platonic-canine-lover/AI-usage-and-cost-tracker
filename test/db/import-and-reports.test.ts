@@ -35,13 +35,13 @@ beforeAll(async () => {
   const anthropic = priceRecords(pricing, parseAnthropicUsage(await load("anthropic-usage-report.json"))).priced;
   const openai = priceRecords(pricing, parseOpenAiUsage(await load("openai-completions-usage.json"))).priced;
 
-  const a = await upsertUsage(db, team, anthropic, principals, { pricingVersion: pricing.version });
-  const o = await upsertUsage(db, team, openai, principals, { pricingVersion: pricing.version });
+  const a = await upsertUsage(db, team, anthropic, principals, { pricing });
+  const o = await upsertUsage(db, team, openai, principals, { pricing });
   expect(a).toEqual({ inserted: 3, updated: 0, unmappedPrincipals: [] });
   expect(o).toEqual({ inserted: 2, updated: 0, unmappedPrincipals: ["key_dave"] });
 
   // Re-import is a no-op in count terms.
-  const again = await upsertUsage(db, team, anthropic, principals, { pricingVersion: pricing.version });
+  const again = await upsertUsage(db, team, anthropic, principals, { pricing });
   expect(again).toEqual({ inserted: 0, updated: 3, unmappedPrincipals: [] });
 
   // Weekly cap of $10 for the team; seats for Oct 2026 and Oct 2025.
@@ -97,7 +97,21 @@ describe("import ownership and provenance", () => {
       "select pricing_version, count(*) as n from usage_events group by pricing_version",
     );
     expect(res.rows).toHaveLength(1);
-    expect(res.rows[0]!.pricing_version).toMatch(/^sha256:/);
+    expect(res.rows[0]!.pricing_version).toBe("test-v1");
+  });
+
+  it("keeps an append-only snapshot of every pricing configuration, keyed by content hash", async () => {
+    const pricing = await loadPricing(path.join(fixtures, "pricing.test.json"));
+    const snap = await db.query<{ version: string; config: { version: string } }>(
+      "select version, config from pricing_snapshots where hash = $1",
+      [pricing.hash],
+    );
+    expect(snap.rows[0]!.version).toBe("test-v1");
+    expect(snap.rows[0]!.config.version).toBe("test-v1");
+    const joined = await db.query<{ n: string }>(
+      "select count(*) as n from usage_events u join pricing_snapshots p on p.hash = u.pricing_hash",
+    );
+    expect(Number(joined.rows[0]!.n)).toBe(5);
   });
 });
 
@@ -107,10 +121,11 @@ describe("weekly budget report", () => {
       "select week_start::text, spend_micro_usd::text, over_cap from weekly_spend where team_id = $1 order by week_start",
       [team],
     );
-    // Anthropic fixture: sonnet $5.76 + opus (50k*$10 + 20k*$50)/1M = $1.50 + haiku (4M*$0.5 + 1M*$2.5)/1M = $4.50 → $11.76
+    // Anthropic fixture: sonnet (1.2M*$2 + 0.1M cache write*$2.5 + 0.8M cache read*$0.2 + 0.3M*$10)/1M = $5.81
+    //                  + opus (50k*$10 + 20k*$50)/1M = $1.50 + haiku (4M*$0.5 + 1M*$2.5)/1M = $4.50 → $11.81
     const oct2026 = rows.rows.find((r) => r.week_start === "2026-10-05");
     expect(oct2026).toBeDefined();
-    expect(oct2026!.spend_micro_usd).toBe(String(11_760_000));
+    expect(oct2026!.spend_micro_usd).toBe(String(11_810_000));
     expect(oct2026!.over_cap).toBe(true);
 
     // OpenAI fixture is Oct 2025: gpt-5-mini (1.5M*$1 + 0.5M*$0.1 + 0.4M*$4)/1M = $3.15 + gpt-5 (90k*$5 + 30k*$20)/1M = $1.05 → $4.20
@@ -131,8 +146,9 @@ describe("seat-use report", () => {
     const rows = await seatUseReport(db, { teamId: team, months: 1 });
     const anthropicOct = rows.find((r) => r.provider === "anthropic" && r.month_start === "2026-10-01");
     expect(anthropicOct).toMatchObject({ paid_seats: 3, active_users: 2, idle_seats: 1, over_subscribed: false });
-    expect(anthropicOct!.seat_cost_micro_usd).toBe(String(60 * MICRO));
-    expect(anthropicOct!.usage_cost_micro_usd).toBe(String(11_760_000));
+    expect(anthropicOct!.seat_cost_full_month_micro_usd).toBe(String(60 * MICRO));
+    expect(anthropicOct!.seat_cost_prorated_micro_usd).toBe(String(60 * MICRO)); // all three seats active the whole month
+    expect(anthropicOct!.usage_cost_micro_usd).toBe(String(11_810_000));
     expect(anthropicOct!.unattributed_cost_micro_usd).toBe("0");
     expect(Number(anthropicOct!.attribution_coverage)).toBe(1);
   });
@@ -166,6 +182,19 @@ describe("seat-use report", () => {
     const openaiOct = rows.find((r) => r.provider === "openai" && r.month_start === "2025-10-01");
     expect(openaiOct).toMatchObject({ paid_seats: 1, active_users: 2, idle_seats: 0, over_subscribed: true });
     expect(Number(openaiOct!.attribution_coverage)).toBe(1);
+  });
+
+  it("prorates a seat that was active for only part of the month, and keeps the full-month figure alongside", async () => {
+    // $31/month seat, active from 22 Oct: 10 of 31 days → $10.00 prorated, $31.00 full month.
+    await db.query(
+      "insert into seats (team_id, user_id, provider, monthly_cost_micro_usd, active_from) values ($1, $2, 'anthropic', $3, '2026-10-22')",
+      [team, newUserId(), 31 * MICRO],
+    );
+    const rows = await seatUseReport(db, { teamId: team, months: 1 });
+    const oct = rows.find((r) => r.provider === "anthropic" && r.month_start === "2026-10-01");
+    expect(oct!.paid_seats).toBe(4);
+    expect(oct!.seat_cost_full_month_micro_usd).toBe(String(91 * MICRO));
+    expect(oct!.seat_cost_prorated_micro_usd).toBe(String(70 * MICRO));
   });
 });
 

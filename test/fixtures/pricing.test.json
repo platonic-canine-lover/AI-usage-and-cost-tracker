@@ -1,12 +1,13 @@
 {
-  "_comment": "Test-only prices chosen for easy arithmetic. Not real.",
+  "_comment": "Test-only prices chosen for easy arithmetic. Not real. Strings keep them exact; numbers are accepted too.",
+  "version": "test-v1",
   "anthropic": {
-    "claude-opus-5-5":   { "input_per_million_usd": 10, "cached_input_per_million_usd": 1, "output_per_million_usd": 50 },
-    "claude-sonnet-5-5": { "input_per_million_usd": 2,  "cached_input_per_million_usd": 0.2, "output_per_million_usd": 10 },
-    "claude-haiku-5-5":  { "input_per_million_usd": 0.5, "output_per_million_usd": 2.5 }
+    "claude-opus-5-5":   { "input_per_million_usd": "10", "cache_write_per_million_usd": "12.5", "cache_write_extended_per_million_usd": "20", "cache_read_per_million_usd": "1", "output_per_million_usd": "50" },
+    "claude-sonnet-5-5": { "input_per_million_usd": "2", "cache_write_per_million_usd": "2.5", "cache_write_extended_per_million_usd": "4", "cache_read_per_million_usd": "0.2", "output_per_million_usd": "10" },
+    "claude-haiku-5-5":  { "input_per_million_usd": "0.5", "output_per_million_usd": "2.5" }
   },
   "openai": {
-    "gpt-5":      { "input_per_million_usd": 5, "cached_input_per_million_usd": 0.5, "output_per_million_usd": 20 },
-    "gpt-5-mini": { "input_per_million_usd": 1, "cached_input_per_million_usd": 0.1, "output_per_million_usd": 4 }
+    "gpt-5":      { "input_per_million_usd": "5", "cache_read_per_million_usd": "0.5", "output_per_million_usd": "20" },
+    "gpt-5-mini": { "input_per_million_usd": "1", "cache_read_per_million_usd": "0.1", "output_per_million_usd": "4" }
   }
 }

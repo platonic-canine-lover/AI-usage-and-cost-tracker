@@ -6,13 +6,15 @@
  * the model from the result (so the report must be grouped by `model`) and the
  * principal from `api_key_id`, falling back to `account_id`.
  *
- * Token mapping:
- *   inputTokens  = uncached_input_tokens + cache_creation.* (cache writes are
- *                  billed at or above the input rate, so counting them as
- *                  input is the conservative choice; the pricing file can
- *                  carry a separate cached rate for cache reads only)
- *   cachedTokens = cache_read_input_tokens
- *   outputTokens = output_tokens
+ * Token mapping (each category keeps its own rate in the pricing file):
+ *   uncachedInput       = uncached_input_tokens
+ *   cacheWrite          = cache_creation.ephemeral_5m_input_tokens
+ *   cacheWriteExtended  = cache_creation.ephemeral_1h_input_tokens
+ *   cacheRead           = cache_read_input_tokens
+ *   output              = output_tokens
+ *
+ * Not covered: server_tool_use (web search requests) is a per-request charge,
+ * not a token one, and is not imported. It is listed so nobody assumes it is.
  */
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -61,8 +63,6 @@ export function parseAnthropicUsage(json: unknown, opts: { allowPartial?: boolea
       for (const r of bucket.results) {
         if (!r.model) throw new Error(`Anthropic usage bucket at ${bucket.starting_at} has no model; request the report with group_by[]=model`);
         const principal = r.api_key_id ?? r.account_id ?? r.service_account_id ?? null;
-        const inputTokens =
-          r.uncached_input_tokens + r.cache_creation.ephemeral_5m_input_tokens + r.cache_creation.ephemeral_1h_input_tokens;
         out.push({
           provider: "anthropic",
           model: r.model,
@@ -80,9 +80,13 @@ export function parseAnthropicUsage(json: unknown, opts: { allowPartial?: boolea
             r.inference_geo,
           ]),
           principal,
-          inputTokens,
-          outputTokens: r.output_tokens,
-          cachedTokens: r.cache_read_input_tokens,
+          tokens: {
+            uncachedInput: r.uncached_input_tokens,
+            cacheWrite: r.cache_creation.ephemeral_5m_input_tokens,
+            cacheWriteExtended: r.cache_creation.ephemeral_1h_input_tokens,
+            cacheRead: r.cache_read_input_tokens,
+            output: r.output_tokens,
+          },
           occurredAt: new Date(bucket.starting_at),
         });
       }
@@ -93,26 +97,39 @@ export function parseAnthropicUsage(json: unknown, opts: { allowPartial?: boolea
 
 export class IncompleteExportError extends Error {
   constructor(detail: string) {
-    super(`Export is incomplete: ${detail}. Fetch every page (follow next_page until has_more is false) and pass them as a JSON array, or pass --allow-partial to import what is here.`);
+    super(
+      `Export is incomplete or its pagination metadata is inconsistent: ${detail}. ` +
+        `Fetch every page (follow next_page until has_more is false) and pass them as a JSON array, or pass --allow-partial to import what is here.`,
+    );
   }
 }
 
+type PageMeta = { has_more?: boolean | undefined; next_page?: string | null | undefined };
+
 /**
- * A usage export is only trustworthy if it is the whole thing. The last page
- * must say has_more=false; earlier pages must each have been followed by the
- * next one (their next_page is non-null, and there is a page after them).
+ * A usage export is only trustworthy if it is the whole thing, and the pages
+ * say so explicitly. Unless `allowPartial`:
+ *   - every page must carry `has_more` (a page without it is not a complete
+ *     provider response, and we do not guess);
+ *   - every non-final page must have has_more=true and a non-null next_page;
+ *   - the final page must have has_more=false, and if it carries next_page it
+ *     must be null.
  */
-export function assertComplete(pages: { has_more?: boolean | undefined; next_page?: string | null | undefined }[], opts: { allowPartial?: boolean }) {
-  if (opts.allowPartial || pages.length === 0) return;
-  const last = pages[pages.length - 1]!;
-  if (last.has_more === true || (last.has_more === undefined && last.next_page)) {
-    throw new IncompleteExportError(`the last page has has_more=true (${pages.length} page(s) supplied)`);
-  }
-  for (let i = 0; i < pages.length - 1; i++) {
-    if (pages[i]!.has_more === false) {
-      throw new IncompleteExportError(`page ${i + 1} is marked as the final page but ${pages.length - i - 1} more follow it`);
+export function assertComplete(pages: PageMeta[], opts: { allowPartial?: boolean }) {
+  if (opts.allowPartial) return;
+  if (pages.length === 0) throw new IncompleteExportError("no pages supplied");
+  pages.forEach((p, i) => {
+    const n = i + 1;
+    const final = i === pages.length - 1;
+    if (p.has_more === undefined) throw new IncompleteExportError(`page ${n} has no has_more field`);
+    if (final) {
+      if (p.has_more) throw new IncompleteExportError(`the last page (${n} of ${pages.length}) has has_more=true`);
+      if (p.next_page) throw new IncompleteExportError(`the last page has has_more=false but a next_page cursor`);
+    } else {
+      if (!p.has_more) throw new IncompleteExportError(`page ${n} is marked as the final page but ${pages.length - n} more follow it`);
+      if (!p.next_page) throw new IncompleteExportError(`page ${n} has has_more=true but no next_page cursor`);
     }
-  }
+  });
 }
 
 export function stableId(parts: (string | null | undefined)[]): string {

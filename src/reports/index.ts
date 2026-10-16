@@ -54,20 +54,26 @@ export interface SeatRow {
   active_users: number;
   idle_seats: number;
   over_subscribed: boolean;
-  seat_cost_micro_usd: string;
+  seat_cost_full_month_micro_usd: string;
+  seat_cost_prorated_micro_usd: string;
   usage_cost_micro_usd: string;
   unattributed_cost_micro_usd: string;
   attribution_coverage: string;
 }
 
-/** Paid seats vs people who actually used each provider, per month, with attribution coverage. */
+/**
+ * Paid seats vs people who actually used each provider, per month, with
+ * attribution coverage. Seat costs are estimates from the seats table, not
+ * invoice figures: `full_month` charges every seat active at any point in the
+ * month its full monthly price; `prorated` scales by active days.
+ */
 export async function seatUseReport(db: Queryable, opts: { teamId?: string; months?: number } = {}): Promise<SeatRow[]> {
   const teamId = opts.teamId ? assertUuid(opts.teamId) : null;
   const months = assertWindow(opts.months ?? 6, "months", 120);
   const res = await db.query<SeatRow>(
     `select s.team_id, t.name as team_name, s.provider::text, s.month_start::text,
             s.paid_seats, s.active_users, s.idle_seats, s.over_subscribed,
-            s.seat_cost_micro_usd::text, s.usage_cost_micro_usd::text,
+            s.seat_cost_full_month_micro_usd::text, s.seat_cost_prorated_micro_usd::text, s.usage_cost_micro_usd::text,
             s.unattributed_cost_micro_usd::text, s.attribution_coverage::text
        from seat_use s
        join teams t on t.id = s.team_id
@@ -93,7 +99,7 @@ export function renderWeekly(rows: WeeklyRow[]): string {
 export function renderSeats(rows: SeatRow[]): string {
   if (rows.length === 0) return "No seats or usage in the selected window.";
   const lines = [
-    "Month       Team                 Provider   Paid  Active  Idle  Seat cost   Usage cost  Per active  Coverage  Note",
+    "Month       Team                 Provider   Paid  Active  Idle  Seats (full) Seats (pro)  Usage cost  Per active  Coverage  Note",
   ];
   for (const r of rows) {
     const attributed = BigInt(r.usage_cost_micro_usd) - BigInt(r.unattributed_cost_micro_usd);
@@ -103,7 +109,7 @@ export function renderSeats(rows: SeatRow[]): string {
     if (r.over_subscribed) notes.push("more active users than paid seats");
     if (Number(r.attribution_coverage) < 1) notes.push(`${formatUsd(r.unattributed_cost_micro_usd)} unattributed`);
     lines.push(
-      `${r.month_start}  ${pad(r.team_name, 20)} ${pad(r.provider, 10)} ${pad(String(r.paid_seats), 5)} ${pad(String(r.active_users), 7)} ${pad(String(r.idle_seats), 5)} ${pad(formatUsd(r.seat_cost_micro_usd), 11)} ${pad(formatUsd(r.usage_cost_micro_usd), 11)} ${pad(perActive, 11)} ${pad(coverage, 9)} ${notes.join("; ")}`,
+      `${r.month_start}  ${pad(r.team_name, 20)} ${pad(r.provider, 10)} ${pad(String(r.paid_seats), 5)} ${pad(String(r.active_users), 7)} ${pad(String(r.idle_seats), 5)} ${pad(formatUsd(r.seat_cost_full_month_micro_usd), 12)} ${pad(formatUsd(r.seat_cost_prorated_micro_usd), 12)} ${pad(formatUsd(r.usage_cost_micro_usd), 11)} ${pad(perActive, 11)} ${pad(coverage, 9)} ${notes.join("; ")}`,
     );
   }
   return lines.join("\n");
