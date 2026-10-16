@@ -221,3 +221,16 @@ describe("reports through RLS", () => {
     expect(otherTeam).not.toBe(team);
   });
 });
+
+describe("local alternative report", () => {
+  it("aggregates monthly prompt and output volume per team, provider and model from imported usage", async () => {
+    const { monthlyVolumes } = await import("../../src/reports/local.js");
+    const vols = await monthlyVolumes(db, { teamId: team, months: 14 });
+    const sonnet = vols.find((v) => v.model === "claude-sonnet-5-5-20260601");
+    // 1.2M uncached + 100k cache write + 800k cache read = 2.1M prompt; 300k output
+    expect(sonnet).toMatchObject({ provider: "anthropic", monthStart: "2026-10-01", promptTokens: 2_100_000n, outputTokens: 300_000n, daysInMonth: 31 });
+    expect(sonnet!.cloudCostMicroUsd).toBe(5_810_000n);
+    const mini = vols.find((v) => v.model === "gpt-5-mini");
+    expect(mini).toMatchObject({ promptTokens: 2_000_000n, outputTokens: 400_000n, monthStart: "2025-10-01" });
+  });
+});

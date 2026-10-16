@@ -6,6 +6,7 @@
  *   pnpm cli import openai    --team <uuid> --file usage.json --pricing pricing.json [--principals map.json]
  *   pnpm report weekly    [--team <uuid>] [--weeks 8]
  *   pnpm report seats     [--team <uuid>] [--months 6]
+ *   pnpm report local     --alternatives alternatives.json [--team <uuid>] [--months 3]
  *   pnpm cli team create --name "Platform" [--budget 250]
  *
  * All commands connect with DATABASE_URL. They are server-side tools, so they
@@ -23,7 +24,9 @@ import pg from "pg";
 import { z } from "zod";
 import { parsers, upsertUsage } from "./importers/index.js";
 import { formatUsd, loadPricing, priceRecords, sumMicroUsd } from "./pricing.js";
+import { loadAlternatives } from "./alternatives.js";
 import { assertUuid, assertWindow, renderSeats, renderWeekly, seatUseReport, weeklyBudgetReport } from "./reports/index.js";
+import { localAlternativeReport, monthlyVolumes, renderLocal } from "./reports/local.js";
 import type { Provider } from "./types.js";
 
 const PrincipalMapSchema = z.record(z.string().min(1), z.string().uuid());
@@ -108,6 +111,29 @@ report
       seatUseReport(db, { ...(opts.team && { teamId: assertUuid(opts.team) }), months: assertWindow(Number(opts.months), "months", 120) }),
     );
     console.log(opts.json ? JSON.stringify(rows, null, 2) : renderSeats(rows));
+  });
+
+report
+  .command("local")
+  .description("What the same monthly token volume would cost, and how long it would take, on a local model and machine you own")
+  .requiredOption("--alternatives <path>", "local models and machines JSON (see alternatives.example.json)")
+  .option("--team <uuid>")
+  .option("--months <n>", "how many months back", "3")
+  .option("--json", "output JSON instead of text", false)
+  .action(async (opts: { alternatives: string; team?: string; months: string; json: boolean }) => {
+    const alt = await loadAlternatives(opts.alternatives);
+    const volumes = await withDb((db) =>
+      monthlyVolumes(db, { ...(opts.team && { teamId: assertUuid(opts.team) }), months: assertWindow(Number(opts.months), "months", 120) }),
+    );
+    const estimates = localAlternativeReport(volumes, alt);
+    console.log(
+      opts.json
+        ? JSON.stringify(estimates, (_k, v: unknown) => (typeof v === "bigint" ? v.toString() : v), 2)
+        : renderLocal(estimates),
+    );
+    if (estimates.some((e) => e.throughputBasis !== "measured")) {
+      console.warn("NOTE: at least one throughput figure is an estimate or a spec ceiling, not a measurement; time and cost scale directly with it.");
+    }
   });
 
 const team = program.command("team").description("Manage teams (server-side)");

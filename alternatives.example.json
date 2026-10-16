@@ -1,0 +1,91 @@
+{
+  "_comment": "Local models and machines to compare against imported cloud usage. Every throughput and spec figure carries a basis (measured | estimate | spec) and a source. Replace the estimates with your own measurements: run `llama-bench` or time an Ollama call on the machine and paste prompt and generation tok/s. The example machine is a Mac mini M6 with 32 GB; nobody had published a measured figure for this model on it when this file was written, so its throughput is an estimate derived as described in each note.",
+  "version": "2026-10-16 example",
+  "as_of": "2026-10-16",
+  "local_models": [
+    {
+      "id": "qwen3.8-27b-q4_k_m",
+      "name": "Qwen3.8-27B (Q4_K_M)",
+      "parameters_b": 27,
+      "quantisation": "Q4_K_M",
+      "file_size_gb": {
+        "value": 17,
+        "basis": "spec",
+        "source": "https://venturebeat.com/technology/qwen3-8-27b-runs-frontier-class-coding-agents-and-reasoning-locally-no-cloud-api-required",
+        "note": "About 17 GB at 4-bit per the article; 28 GB at FP8 would not leave headroom in 32 GB."
+      },
+      "context_tokens": 262144,
+      "licence": "Apache-2.0",
+      "benchmarks": {
+        "SWE-bench Pro": {
+          "score": 61.7,
+          "source": "https://venturebeat.com/technology/qwen3-8-27b-runs-frontier-class-coding-agents-and-reasoning-locally-no-cloud-api-required",
+          "note": "Alibaba-reported."
+        },
+        "LiveCodeBench v6": {
+          "score": 90.3,
+          "source": "https://venturebeat.com/technology/qwen3-8-27b-runs-frontier-class-coding-agents-and-reasoning-locally-no-cloud-api-required",
+          "note": "Alibaba-reported."
+        },
+        "OSWorld-Verified": {
+          "score": 84.3,
+          "source": "https://venturebeat.com/technology/qwen3-8-27b-runs-frontier-class-coding-agents-and-reasoning-locally-no-cloud-api-required",
+          "note": "Alibaba-reported."
+        },
+        "Artificial Analysis Intelligence Index": {
+          "score": 52,
+          "source": "https://venturebeat.com/technology/qwen3-8-27b-runs-frontier-class-coding-agents-and-reasoning-locally-no-cloud-api-required",
+          "note": "Third-party; the model used 160M output tokens across the index, far above the 43M median for comparable open models, i.e. it reasons at length by default."
+        }
+      }
+    }
+  ],
+  "machines": [
+    {
+      "id": "mac-mini-m6-32gb",
+      "name": "Mac mini M6, 32 GB",
+      "memory_gb": 32,
+      "os_headroom_gb": 6,
+      "memory_bandwidth_gbs": {
+        "value": 170,
+        "basis": "spec",
+        "source": "https://support.apple.com/en-ug/128108",
+        "note": "170 GB/s for the 24 GB and 32 GB configurations."
+      },
+      "prompt_tokens_per_sec": {
+        "value": 19,
+        "basis": "estimate",
+        "source": "https://terminalbytes.com/run-qwen-3-8-27b-locally/",
+        "note": "No published measurement for this model on an M6 mini. Scaled from 93 tok/s measured on an M3 Ultra (60 GPU cores) under Ollama by GPU-core ratio 12/60. Prompt processing is compute-bound, so this is rough. MEASURE IT."
+      },
+      "generation_tokens_per_sec": {
+        "value": 8,
+        "basis": "estimate",
+        "source": "https://localaimaster.com/blog/apple-silicon-ai-buying-guide",
+        "note": "Bandwidth ceiling 170 GB/s \u00f7 17 GB \u2248 10 tok/s; that guide finds real runs reach roughly 77-88% of the ceiling, so 8. The one published Mac measurement for this model (M3 Ultra, 819 GB/s, Ollama) got only 14 tok/s, well under its own ceiling, so expect Ollama to land below 8 and llama.cpp nearer it. MEASURE IT."
+      },
+      "concurrency": 1,
+      "price_usd": 1299,
+      "amortise_months": 36,
+      "watts_active": {
+        "value": 70,
+        "basis": "estimate",
+        "source": "https://terminalbytes.com/run-qwen-3-8-27b-locally/",
+        "note": "That M3 Ultra measured ~64 W GPU + 6 W CPU during generation. The M6 mini will draw less; Apple lists 155 W maximum continuous for the whole unit. Replace with a measured figure from `powermetrics`."
+      },
+      "watts_idle": {
+        "value": 5,
+        "basis": "estimate",
+        "source": "https://support.apple.com/en-ug/128108",
+        "note": "Apple's spec page gives no idle power figure; 5 W is a placeholder."
+      },
+      "electricity_usd_per_kwh": 0.3
+    }
+  ],
+  "cloud_benchmarks": {
+    "anthropic/claude-sonnet-5-5": {},
+    "openai/gpt-5": {}
+  },
+  "_comment_cloud_benchmarks": "Add the published scores for the cloud models you actually use, keyed provider/model-prefix, so the report can show parity. Left empty on purpose: the comparison article asserts the local model beats or trails specific Claude and GPT models on named benchmarks but does not print those models' scores, so there is nothing to copy without inventing it.",
+  "_comment_price": "price_usd is the $899 US base price (https://www.techrepublic.com/article/news-mac-mini-m6-cheat-sheet/) plus a placeholder $400 for the 32 GB configure-to-order upgrade, which Apple had not published at the time; replace with what you paid."
+}

@@ -142,6 +142,54 @@ no user mapping, so the coverage column says 50% and the note says how much
 money is unattributed. Idle-seat counts are only as good as the principal
 map, and the report says so on every row rather than clamping to zero.
 
+## Would a local model be cheaper?
+
+`pnpm report local --alternatives alternatives.json` takes each team's monthly
+token volume per cloud model and asks what the same volume would cost, and
+how long it would take, on a local model on a machine you own. The shipped
+`alternatives.example.json` describes Qwen3.8-27B at Q4_K_M on a Mac mini M6
+with 32 GB, with a source on every figure.
+
+```
+2026-10-01  Platform  anthropic/claude-haiku-5-5  →  Qwen3.8-27B (Q4_K_M) on Mac mini M6, 32 GB
+  volume      4,000,000 prompt tokens, 1,000,000 output tokens
+  cloud cost  $4.50
+  local time  3.9 days of 31.0 days available  (13% utilisation)  [throughput estimate: 19 prompt tok/s, 8 gen tok/s]
+  local cost  $39.02 dedicated ($2.93 energy + $36.08 hardware/month), $7.45 if shared (hardware prorated by utilisation)
+  memory      17 GB model in 32 GB (6 GB headroom): fits
+  benchmarks  (local score / cloud score, both as published; not a probability)
+    SWE-bench Pro                61.7     vs cloud score not supplied
+```
+
+How it is worked out, and what it will not do:
+
+- Prompt tokens are everything the model has to read (uncached input plus
+  cache writes and cache reads: a local run gets no cache discount), output
+  tokens are generated. Time is prompt ÷ prompt tok/s plus output ÷ generation
+  tok/s, divided by the machine's concurrency. Utilisation above 100% is
+  printed as CANNOT KEEP UP.
+- Local cost is energy (active watts while busy, idle watts the rest of the
+  month, at your tariff) plus hardware amortised over the months you choose,
+  shown both as a dedicated machine and prorated by utilisation.
+- Every throughput, power and size figure in the alternatives file carries a
+  `basis` of `measured`, `estimate` or `spec` and a source URL. The report
+  prints the basis and warns when anything is not measured, because time and
+  cost scale directly with it. The example file's throughput for the M6 mini
+  is an estimate (nobody had published a measurement for that pairing when it
+  was written): a bandwidth ceiling of 170 GB/s ÷ 17 GB ≈ 10 tok/s generation,
+  taken at about 80%, and prompt processing scaled by GPU-core count from the
+  one published Mac measurement. Replace both with `llama-bench` output from
+  the actual machine before believing a single number.
+- "Likelihood of success" is not a number this tool will give you. It prints
+  the local model's published benchmark scores next to the cloud model's on
+  the same benchmark, where you have supplied the cloud score, and the ratio.
+  Published scores are vendor-reported, on different harnesses, on tasks that
+  are not yours. The example file leaves the cloud scores empty rather than
+  copy figures the comparison articles assert but do not print. The way to
+  find out whether the local model can do your work is to run your work
+  through it and judge the output, which is what the cross-model judging tool
+  is for.
+
 ## What this is and is not
 
 | Capability | Status |
@@ -153,6 +201,7 @@ map, and the report says so on every row rather than clamping to zero.
 | Team-scoped row-level security | Implemented and tested; not yet adversarially reviewed by a third party |
 | Fetching from the provider APIs on a schedule | Not implemented: you pass the JSON you fetched |
 | Live spend enforcement (blocking calls at the cap) | Not implemented, and out of scope here; it needs a check in the request path, not a report |
+| Local-model comparison (time, energy, amortised hardware, benchmark parity) | Implemented; throughput figures must be measured by you |
 | Alerts, notifications, dashboard, onboarding | Not implemented |
 
 The weekly cap flags a team after the spend is imported. If you need calls
@@ -205,7 +254,8 @@ supabase/migrations/   versioned SQL, applied in order (five so far; 000400 and 
 scripts/               migrate.ts (plain Postgres runner), reset.ts, auth-shim.sql
 src/importers/         anthropic.ts, openai.ts, index.ts (upsert)
 src/pricing.ts         pricing table, micro-dollar maths
-src/reports/           weekly cap and seat-use queries and renderers
+src/reports/           weekly cap, seat-use and local-alternative queries and renderers
+src/alternatives.ts    local model / machine schema and the time-and-cost estimate
 src/cli.ts             commander CLI
 test/db/               harness.ts, RLS isolation, import and reports
 test/unit/             parsers and pricing
