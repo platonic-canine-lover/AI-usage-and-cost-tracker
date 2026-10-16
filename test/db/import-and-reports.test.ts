@@ -277,5 +277,11 @@ describe("local alternative report: months and human time", () => {
     const q = await taskQuality(db, team);
     expect(q.get(`${team}|local|qwen3.8-27b-q4_k_m`)).toEqual({ attempts: 2, accepted: 1, avgReviewMinutes: 30, avgRetries: 1.5, acceptanceRate: 0.5 });
     expect(q.get(`${team}|anthropic|claude-haiku-5-5`)).toEqual({ attempts: 1, accepted: 1, avgReviewMinutes: 5, avgRetries: 0, acceptanceRate: 1 });
+
+    const { taskCountsByMonth } = await import("../../src/reports/local.js");
+    const counts = await taskCountsByMonth(db, team);
+    const thisMonth = new Date().toISOString().slice(0, 7) + "-01";
+    expect(counts.get(`${team}|anthropic|claude-haiku-5-5|${thisMonth}`)).toBe(1);
+    expect(counts.get(`${team}|local|qwen3.8-27b-q4_k_m|${thisMonth}`)).toBe(2);
   });
 });

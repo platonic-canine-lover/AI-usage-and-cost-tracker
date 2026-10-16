@@ -27,7 +27,7 @@ import { parsers, upsertUsage } from "./importers/index.js";
 import { formatUsd, loadPricing, priceRecords, sumMicroUsd } from "./pricing.js";
 import { loadAlternatives } from "./alternatives.js";
 import { assertUuid, assertWindow, renderSeats, renderWeekly, seatUseReport, weeklyBudgetReport } from "./reports/index.js";
-import { localAlternativeReport, monthlyVolumes, renderLocal, taskQuality } from "./reports/local.js";
+import { localAlternativeReport, monthlyVolumes, renderLocal, taskCountsByMonth, taskQuality } from "./reports/local.js";
 import type { Provider } from "./types.js";
 
 const PrincipalMapSchema = z.record(z.string().min(1), z.string().uuid());
@@ -125,11 +125,12 @@ report
   .action(async (opts: { alternatives: string; team?: string; months: string; includeCurrent: boolean; json: boolean }) => {
     const alt = await loadAlternatives(opts.alternatives);
     const teamId = opts.team ? assertUuid(opts.team) : undefined;
-    const { volumes, quality } = await withDb(async (db) => ({
+    const { volumes, quality, counts } = await withDb(async (db) => ({
       volumes: await monthlyVolumes(db, { ...(teamId && { teamId }), months: assertWindow(Number(opts.months), "months", 120), includeCurrent: opts.includeCurrent }),
       quality: await taskQuality(db, teamId),
+      counts: await taskCountsByMonth(db, teamId),
     }));
-    const estimates = localAlternativeReport(volumes, alt, quality);
+    const estimates = localAlternativeReport(volumes, alt, quality, counts);
     console.log(
       opts.json
         ? JSON.stringify(estimates, (_k, v: unknown) => (typeof v === "bigint" ? v.toString() : v), 2)

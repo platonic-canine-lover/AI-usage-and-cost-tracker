@@ -109,7 +109,24 @@ export async function taskQuality(db: Queryable, teamId?: string): Promise<Map<s
   return map;
 }
 
-export function localAlternativeReport(volumes: MonthlyVolume[], alt: AlternativesFile, quality = new Map<string, TaskQuality>()): LocalEstimate[] {
+/** Cloud task outcomes recorded per (team, provider, model, month), keyed "team|provider|model|YYYY-MM-01". */
+export async function taskCountsByMonth(db: Queryable, teamId?: string): Promise<Map<string, number>> {
+  const res = await db.query<{ team_id: string; provider: string; model: string; month_start: string; n: number }>(
+    `select team_id, provider::text as provider, model,
+            date_trunc('month', recorded_at at time zone 'UTC')::date::text as month_start, count(*)::int as n
+       from task_outcomes where ($1::uuid is null or team_id = $1)
+      group by team_id, provider, model, date_trunc('month', recorded_at at time zone 'UTC')`,
+    [teamId ?? null],
+  );
+  return new Map(res.rows.map((r) => [`${r.team_id}|${r.provider}|${r.model}|${r.month_start}`, r.n]));
+}
+
+export function localAlternativeReport(
+  volumes: MonthlyVolume[],
+  alt: AlternativesFile,
+  quality = new Map<string, TaskQuality>(),
+  taskCounts = new Map<string, number>(),
+): LocalEstimate[] {
   const out: LocalEstimate[] = [];
   for (const v of volumes) {
     for (const model of alt.local_models) {
@@ -119,6 +136,7 @@ export function localAlternativeReport(volumes: MonthlyVolume[], alt: Alternativ
             human: alt.human,
             localQuality: quality.get(`${v.teamId}|local|${model.id}`),
             cloudQuality: quality.get(`${v.teamId}|${v.provider}|${v.model}`),
+            cloudTasksInMonth: taskCounts.get(`${v.teamId}|${v.provider}|${v.model}|${v.monthStart}`),
           }),
         );
       }
@@ -164,6 +182,16 @@ export function renderLocal(estimates: LocalEstimate[]): string {
         lines.push(`  human       ${h.label}: ${rate} (machine time above excludes this)`);
         lines.push(humanLine("local", h.local));
         lines.push(humanLine("cloud", h.cloud));
+        if (h.combined) {
+          const f = (x: bigint | null) => (x === null ? "n/a" : formatUsd(x));
+          lines.push(
+            `    TOTAL  estimated cost per accepted result, machine + human: cloud ${f(h.combined.cloudPerAcceptedMicroUsd)}` +
+              ` | local ${f(h.combined.localDedicatedPerAcceptedMicroUsd)} dedicated, ${f(h.combined.localSharedPerAcceptedMicroUsd)} shared` +
+              `  [${h.combined.basis.join("; ")}]`,
+          );
+        } else {
+          lines.push("    TOTAL  not computed: needs cloud task outcomes recorded in this month and review data for both sides");
+        }
       }
     } else {
       lines.push("  human       not costed: set human.hourly_usd in the alternatives file to include review time");

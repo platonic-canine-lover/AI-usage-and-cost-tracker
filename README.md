@@ -159,10 +159,12 @@ with 32 GB, with a source on every figure.
   memory      weights 17 GB + KV cache 4.1 GB at 32768 tokens + overhead 1.5 GB fit in 26 GB [KV figure: estimate]
   human       UK National Living Wage (21+): GBP 12.71/h ≈ $16.52/h [fx estimate] (machine time above excludes this)
     local  30 min review/attempt → $8.26/attempt, $16.52/accepted result (50% accepted, 0.5 retries avg) [recorded, 2 attempts]
-    cloud  5 min review/attempt → $1.38/attempt, $1.38/accepted result (100% accepted, 0 retries avg) [recorded, 1 attempts]
+    cloud  5 min review/attempt → $1.38/attempt, $1.38/accepted result (100% accepted, 0 retries avg) [recorded, 10 attempts]
+    TOTAL  estimated cost per accepted result, machine + human: cloud $1.83 | local $22.83 dedicated, $18.60 shared  [10 cloud task(s) recorded this month; cloud review recorded; local review recorded]
   human       Median UK engineer (user-supplied figure): GBP 17/h ≈ $22.10/h [fx estimate] (machine time above excludes this)
     local  30 min review/attempt → $11.05/attempt, $22.10/accepted result (50% accepted, 0.5 retries avg) [recorded, 2 attempts]
-    cloud  5 min review/attempt → $1.84/attempt, $1.84/accepted result (100% accepted, 0 retries avg) [recorded, 1 attempts]
+    cloud  5 min review/attempt → $1.84/attempt, $1.84/accepted result (100% accepted, 0 retries avg) [recorded, 10 attempts]
+    TOTAL  estimated cost per accepted result, machine + human: cloud $2.29 | local $28.41 dedicated, $24.17 shared  [10 cloud task(s) recorded this month; cloud review recorded; local review recorded]
   benchmarks  (local score / cloud score, both as published; not a probability)
     SWE-bench Pro                          61.7     vs cloud score not supplied
 ```
@@ -186,6 +188,14 @@ Three rules shape it:
   and expensive per finished task shows up as exactly that, and whether the
   gap matters depends on whose hour is being spent, which is why both rates
   are there.
+- **The TOTAL line adds it up, but only when it can be fair.** Estimated cost
+  per accepted result, machine plus human, for the cloud model and for the
+  local one (dedicated and shared hardware), is computed only when the
+  month's cloud tasks were recorded (so the month's cost can be divided into
+  tasks) and both sides have review data. The local machine share is
+  rescaled by the local retry rate. Every assumption that went into the
+  figure is printed beside it; a missing acceptance rate makes that side
+  `n/a` rather than a guess.
 - **The memory check says what it checked.** Weights alone give "weights fit;
   full-context feasibility unverified". Supply `kv_cache_gb_per_1k_tokens`
   (from llama.cpp's startup log, or 2 × layers × KV heads × head dim × bytes)
@@ -292,6 +302,14 @@ test/db/               harness.ts, RLS isolation, import and reports
 test/unit/             parsers and pricing
 test/fixtures/         synthetic provider exports, test pricing, principal map
 ```
+
+## How it was built
+
+One day, seven commits, four rounds of independent code review in between.
+`docs/review-log.md` lists each finding and the commit that answered it,
+including the ones that were real defects (a cross-team upsert, cache
+writes priced at the input rate, a pagination check that accepted
+incomplete exports).
 
 ## Licence
 

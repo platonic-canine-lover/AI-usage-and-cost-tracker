@@ -153,6 +153,17 @@ export interface MonthlyVolume {
   daysCovered: number;
 }
 
+/** Combined cost of one accepted result: machine plus human, per rate. Null fields mean the data does not support a fair figure. */
+export interface CombinedCost {
+  /** Number of cloud tasks recorded in this month; the unit the month's cost is divided by. */
+  tasksInMonth: number;
+  /** Which inputs were recorded and which assumed; shown with the figure. */
+  basis: string[];
+  cloudPerAcceptedMicroUsd: bigint | null;
+  localDedicatedPerAcceptedMicroUsd: bigint | null;
+  localSharedPerAcceptedMicroUsd: bigint | null;
+}
+
 /** Recorded human effort for a model, from the task_quality view. */
 export interface TaskQuality {
   attempts: number;
@@ -202,6 +213,8 @@ export interface LocalEstimate {
     fxBasis: string | null;
     local: HumanSide;
     cloud: HumanSide;
+    /** Present only when cloud tasks were recorded for the month and both sides have review data. */
+    combined: CombinedCost | null;
   }[];
   throughputBasis: "measured" | "estimate" | "spec";
   parity: { benchmark: string; local: number; cloud: number | null; ratio: number | null; localSource: string; cloudSource: string | null }[];
@@ -243,6 +256,54 @@ export function humanSide(quality: TaskQuality | undefined, hourlyUsd: number, d
   return none;
 }
 
+/**
+ * Estimated total cost per accepted result, machine plus human.
+ *
+ * Fair only when the month's cloud tasks were recorded (so the month's cost
+ * can be divided into tasks) and both sides have review data. The month's
+ * cloud cost already contains every retry that happened in the cloud; the
+ * local machine component is rescaled by (1 + local retries) / (1 + cloud
+ * retries) because the local model's retry rate is its own. Per-accepted =
+ * per-attempt ÷ acceptance rate. An assumed review time is allowed and
+ * flagged; an unknown acceptance rate makes the figure null.
+ */
+export function combinedCost(
+  args: {
+    tasksInMonth: number;
+    cloudCostMicroUsd: bigint;
+    localDedicatedMicroUsd: bigint;
+    localSharedMicroUsd: bigint;
+    cloud: HumanSide;
+    local: HumanSide;
+  },
+): CombinedCost | null {
+  const { tasksInMonth, cloud, local } = args;
+  if (tasksInMonth <= 0) return null;
+  if (cloud.basis === "none" || local.basis === "none") return null;
+  const basis: string[] = [`${tasksInMonth} cloud task(s) recorded this month`];
+  basis.push(cloud.basis === "recorded" ? `cloud review ${cloud.basis}` : `cloud review ASSUMED`);
+  basis.push(local.basis === "recorded" ? `local review ${local.basis}` : `local review ASSUMED`);
+
+  const n = BigInt(tasksInMonth);
+  const perAccepted = (machinePerTask: bigint, side: HumanSide): bigint | null => {
+    if (side.acceptanceRate === null || side.acceptanceRate <= 0 || side.reviewCostPerAttemptMicroUsd === null) return null;
+    const perAttempt = machinePerTask + side.reviewCostPerAttemptMicroUsd;
+    return BigInt(Math.round(Number(perAttempt) / side.acceptanceRate));
+  };
+
+  const cloudMachinePerTask = args.cloudCostMicroUsd / n;
+  const retryScale = (1 + (local.avgRetries ?? 0)) / (1 + (cloud.avgRetries ?? 0));
+  if (local.avgRetries === null) basis.push("local retries unknown, taken as equal to cloud");
+  const localMachine = (total: bigint): bigint => BigInt(Math.round((Number(total) / tasksInMonth) * retryScale));
+
+  const cloudPer = perAccepted(cloudMachinePerTask, cloud);
+  const localDed = perAccepted(localMachine(args.localDedicatedMicroUsd), local);
+  const localShared = perAccepted(localMachine(args.localSharedMicroUsd), local);
+  if (cloud.acceptanceRate === null) basis.push("cloud acceptance unknown → cloud figure null");
+  if (local.acceptanceRate === null) basis.push("local acceptance unknown → local figure null");
+  return { tasksInMonth, basis, cloudPerAcceptedMicroUsd: cloudPer, localDedicatedPerAcceptedMicroUsd: localDed, localSharedPerAcceptedMicroUsd: localShared };
+}
+
 export function memoryCheck(model: LocalModel, machine: Machine): LocalEstimate["memory"] {
   const availableGb = machine.memory_gb - machine.os_headroom_gb;
   const weightsGb = model.file_size_gb.value;
@@ -266,7 +327,13 @@ export function estimateLocal(
   model: LocalModel,
   machine: Machine,
   cloudBenchmarks: AlternativesFile["cloud_benchmarks"] = {},
-  opts: { human?: Human | undefined; localQuality?: TaskQuality | undefined; cloudQuality?: TaskQuality | undefined } = {},
+  opts: {
+    human?: Human | undefined;
+    localQuality?: TaskQuality | undefined;
+    cloudQuality?: TaskQuality | undefined;
+    /** Cloud task outcomes recorded in this volume's month, for this provider/model. */
+    cloudTasksInMonth?: number | undefined;
+  } = {},
 ): LocalEstimate {
   const promptTps = machine.prompt_tokens_per_sec.value;
   const genTps = machine.generation_tokens_per_sec.value;
@@ -333,11 +400,19 @@ export function estimateLocal(
     localCostProratedMicroUsd: energyCostMicroUsd + hardwareProratedMicroUsd,
     cloudCostMicroUsd: volume.cloudCostMicroUsd,
     human: opts.human
-      ? humanRatesUsd(opts.human).map((r) => ({
-          ...r,
-          local: humanSide(opts.localQuality, r.hourlyUsd, opts.human!.default_review_minutes_per_task),
-          cloud: humanSide(opts.cloudQuality, r.hourlyUsd, opts.human!.default_review_minutes_per_task),
-        }))
+      ? humanRatesUsd(opts.human).map((r) => {
+          const local = humanSide(opts.localQuality, r.hourlyUsd, opts.human!.default_review_minutes_per_task);
+          const cloud = humanSide(opts.cloudQuality, r.hourlyUsd, opts.human!.default_review_minutes_per_task);
+          const combined = combinedCost({
+            tasksInMonth: opts.cloudTasksInMonth ?? 0,
+            cloudCostMicroUsd: volume.cloudCostMicroUsd,
+            localDedicatedMicroUsd: energyCostMicroUsd + hardwareDedicatedMicroUsd,
+            localSharedMicroUsd: energyCostMicroUsd + hardwareProratedMicroUsd,
+            cloud,
+            local,
+          });
+          return { ...r, local, cloud, combined };
+        })
       : [],
     throughputBasis: basis(),
     parity,

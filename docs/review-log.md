@@ -1,0 +1,70 @@
+# Review log
+
+This repository was built in one day, 16 October 2026, as a series of
+commits, each one a response to an independent code review of the previous
+state. The reviewer inspected the code and tests but could not run them;
+every commit below was verified locally (typecheck, lint, 72 tests against
+Postgres 16) before it was handed back. The log is here because the
+corrections say more about the engineering than the first draft does.
+
+## Commit 1: first build
+
+Schema with forced row-level security per team and `security_invoker`
+views; a ten-case isolation test run as the `authenticated` role with JWT
+claims the way PostgREST does it; importers for the Anthropic and OpenAI
+usage APIs; pricing from a config file; weekly cap and seat-use reports;
+CI on local Supabase and plain Postgres 15/16/17.
+
+## Review 1 → commit 2
+
+| Finding | Severity | Fix |
+| --- | --- | --- |
+| Upsert key `(provider, external_id)` crossed team boundaries: a second team importing the same record silently updated the first team's row | High | A record belongs to exactly one team. Pre-check raises `CrossTeamConflictError` and rolls back; the upsert carries `WHERE usage_events.team_id = excluded.team_id` so a concurrent import cannot re-home a row. Both tested, including a simulated race. |
+| Importers accepted a page with `has_more: true`, so a partial export looked complete | High | Rejected unless `--allow-partial`. |
+| Pricing used float arithmetic before storing integers; no provenance | High | BigInt arithmetic; `pricing_version` stamped on every row (migration 000400). |
+| Seat report clamped idle seats to zero and hid unmapped users | Medium | Attribution coverage, unattributed spend and `over_subscribed` added. |
+| No validation of team ids, budgets, windows; reports implied live control | Medium | Validated; README states reports are retrospective and has a "what this is and is not" table. |
+
+## Review 2 → commit 3
+
+| Finding | Severity | Fix |
+| --- | --- | --- |
+| Anthropic cache-write tokens were folded into input and priced at the input rate, understating cost | High | Five token categories stored and priced separately (migration 000500). A category with tokens but no configured rate fails the import. A test shows the understatement the reviewer predicted ($9.75 vs $6.00 on 2M cache-write tokens). |
+| Pagination check accepted a final page with `has_more` omitted | Medium | `has_more` required on every page; non-final pages need `true` plus a cursor; the final page needs `false` and no cursor. |
+| "Integer-only" pricing still parsed prices through JavaScript numbers | Medium | Prices parse from decimal text into integer pico-USD per token; six decimal places supported, more rejected; tests at the smallest increment and the half-up boundary. |
+| Monthly seat cost counted a seat active for one day at full price | Medium | Both full-month and day-prorated figures, documented as estimates. |
+| A reused version label could make a historical cost unreproducible | Low | Content hash stamped on rows; `pricing_snapshots` keeps every configuration. |
+
+## Commit 4: local-model comparison
+
+`report local` compares a month's cloud token volume with running the same
+volume on a local model on a machine you own: wall-clock time, utilisation,
+energy, amortised hardware, memory fit, benchmark parity. Every figure in
+the alternatives file carries a basis (`measured`, `estimate`, `spec`) and a
+source; the report prints the basis and warns when anything is unmeasured.
+
+## Review 3 → commit 5
+
+| Finding | Fix |
+| --- | --- |
+| No human time: a local model can be cheap per token and expensive per finished task | `task_outcomes` table and `cli task record` (review minutes, retries, accepted/rejected) for cloud and local models; the report prices review time per attempt and per accepted result, local beside cloud, marked recorded / assumed / none, never folded into machine time. |
+| Memory check compared weights alone against RAM | KV cache sized for the working context plus runtime overhead when figures are supplied; otherwise "weights fit; full-context feasibility unverified". |
+| Current, incomplete month compared against full-month local costs; "3 months" returned 4 | Completed months only by default; `--include-current` labels the current month MONTH-TO-DATE and scales hours, idle energy and hardware share to elapsed days. |
+
+## Review 4 → commits 6 and 7
+
+| Finding | Fix |
+| --- | --- |
+| One hourly rate is not a universal value for human time | `human.rates`: named rates in USD, GBP or EUR with a sourced FX figure. Example carries the UK National Living Wage (£12.71 from April 2026, GOV.UK) and a user-supplied £17/h engineer figure flagged as unverified. |
+| Machine and human costs were shown separately, leaving the reader to add them | `TOTAL` line: estimated cost per accepted result, machine plus human, cloud vs local (dedicated and shared), computed only when the month's cloud tasks were recorded and both sides have review data, with every assumption listed beside the figure. |
+
+## What was not done, on purpose
+
+- No reconciliation against a real provider invoice. The README says so.
+- No scheduled provider sync, live spend enforcement, alerts or dashboard.
+  It is an internal reporting tool.
+- The Mac mini throughput, KV-cache size and GBP/USD figures in the example
+  are labelled placeholders until measured on the actual machine.
+
+After commit 7 the reviewer's advice was to measure and then stop adding
+features. That is the plan.
