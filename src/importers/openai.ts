@@ -13,7 +13,7 @@
  */
 import { z } from "zod";
 import type { UsageRecord } from "../types.js";
-import { stableId } from "./anthropic.js";
+import { assertComplete, stableId } from "./anthropic.js";
 
 const Result = z.object({
   object: z.literal("organization.usage.completions.result").optional(),
@@ -44,8 +44,9 @@ export const OpenAiUsagePage = z.object({
 });
 export type OpenAiUsagePage = z.infer<typeof OpenAiUsagePage>;
 
-export function parseOpenAiUsage(json: unknown): UsageRecord[] {
+export function parseOpenAiUsage(json: unknown, opts: { allowPartial?: boolean } = {}): UsageRecord[] {
   const pages = Array.isArray(json) ? json.map((p) => OpenAiUsagePage.parse(p)) : [OpenAiUsagePage.parse(json)];
+  assertComplete(pages, opts);
   const out: UsageRecord[] = [];
   for (const page of pages) {
     for (const bucket of page.data) {

@@ -10,16 +10,23 @@
  *
  * All commands connect with DATABASE_URL. They are server-side tools, so they
  * run as the connection's own role (service_role on Supabase), which bypasses
- * RLS by design; RLS protects the API that team members talk to.
+ * RLS by design; RLS protects the API that team members talk to. Keep that
+ * connection string on the server.
+ *
+ * Reports are retrospective: they describe imported usage. Nothing here
+ * blocks an API call in flight.
  */
 import "dotenv/config";
 import { readFile } from "node:fs/promises";
 import { Command } from "commander";
 import pg from "pg";
+import { z } from "zod";
 import { parsers, upsertUsage } from "./importers/index.js";
-import { formatUsd, loadPricing, MICRO, priceRecords } from "./pricing.js";
-import { renderSeats, renderWeekly, seatUseReport, weeklyBudgetReport } from "./reports/index.js";
-import type { PrincipalMap, Provider } from "./types.js";
+import { formatUsd, loadPricing, priceRecords, sumMicroUsd } from "./pricing.js";
+import { assertUuid, assertWindow, renderSeats, renderWeekly, seatUseReport, weeklyBudgetReport } from "./reports/index.js";
+import type { Provider } from "./types.js";
+
+const PrincipalMapSchema = z.record(z.string().min(1), z.string().uuid());
 
 async function withDb<T>(fn: (db: pg.Client) => Promise<T>): Promise<T> {
   const url = process.env.DATABASE_URL;
@@ -44,42 +51,59 @@ for (const provider of ["anthropic", "openai"] as const satisfies readonly Provi
     .requiredOption("--pricing <path>", "pricing table JSON (see pricing.example.json)")
     .option("--principals <path>", "JSON map of provider api key / account ids to user uuids")
     .option("--allow-unknown-models", "import unknown models at zero cost instead of failing", false)
-    .action(async (opts: { team: string; file: string; pricing: string; principals?: string; allowUnknownModels: boolean }) => {
-      const json: unknown = JSON.parse(await readFile(opts.file, "utf8"));
-      const records = parsers[provider](json);
-      const table = await loadPricing(opts.pricing);
-      const { priced, unknownModels } = priceRecords(table, records, { allowUnknownModels: opts.allowUnknownModels });
-      const principalMap: PrincipalMap = opts.principals ? (JSON.parse(await readFile(opts.principals, "utf8")) as PrincipalMap) : {};
+    .option("--allow-partial", "import an export whose last page has has_more=true instead of failing", false)
+    .action(
+      async (opts: {
+        team: string;
+        file: string;
+        pricing: string;
+        principals?: string;
+        allowUnknownModels: boolean;
+        allowPartial: boolean;
+      }) => {
+        const teamId = assertUuid(opts.team);
+        const json: unknown = JSON.parse(await readFile(opts.file, "utf8"));
+        const records = parsers[provider](json, { allowPartial: opts.allowPartial });
+        const table = await loadPricing(opts.pricing);
+        const { priced, unknownModels, pricingVersion } = priceRecords(table, records, { allowUnknownModels: opts.allowUnknownModels });
+        const principalMap = opts.principals ? PrincipalMapSchema.parse(JSON.parse(await readFile(opts.principals, "utf8"))) : {};
 
-      const summary = await withDb((db) => upsertUsage(db, opts.team, priced, principalMap));
-      const total = priced.reduce((s, r) => s + r.costMicroUsd, 0);
-      console.log(`${provider}: ${summary.inserted} inserted, ${summary.updated} updated, ${formatUsd(total)} total`);
-      if (unknownModels.length) console.warn(`unpriced models (cost recorded as $0): ${unknownModels.join(", ")}`);
-      if (summary.unmappedPrincipals.length)
-        console.warn(`principals with no user mapping (user_id left null): ${summary.unmappedPrincipals.join(", ")}`);
-    });
+        const summary = await withDb((db) => upsertUsage(db, teamId, priced, principalMap, { pricingVersion }));
+        console.log(
+          `${provider}: ${summary.inserted} inserted, ${summary.updated} updated, ${formatUsd(sumMicroUsd(priced))} total (pricing ${pricingVersion})`,
+        );
+        if (opts.allowPartial) console.warn("--allow-partial set: this import may not cover the whole period");
+        if (unknownModels.length) console.warn(`unpriced models (cost recorded as $0): ${unknownModels.join(", ")}`);
+        if (summary.unmappedPrincipals.length)
+          console.warn(`principals with no user mapping (user_id left null): ${summary.unmappedPrincipals.join(", ")}`);
+      },
+    );
 }
 
-const report = program.command("report").description("Print a report");
+const report = program.command("report").description("Print a report (retrospective, from imported usage)");
 report
   .command("weekly")
-  .description("Spend per team per ISO week against the weekly cap")
+  .description("Spend per team per ISO week against the weekly cap; exit code 2 if any team is over")
   .option("--team <uuid>")
   .option("--weeks <n>", "how many weeks back", "8")
   .option("--json", "output JSON instead of a table", false)
   .action(async (opts: { team?: string; weeks: string; json: boolean }) => {
-    const rows = await withDb((db) => weeklyBudgetReport(db, { ...(opts.team && { teamId: opts.team }), weeks: Number(opts.weeks) }));
+    const rows = await withDb((db) =>
+      weeklyBudgetReport(db, { ...(opts.team && { teamId: assertUuid(opts.team) }), weeks: assertWindow(Number(opts.weeks), "weeks") }),
+    );
     console.log(opts.json ? JSON.stringify(rows, null, 2) : renderWeekly(rows));
     if (rows.some((r) => r.over_cap)) process.exitCode = 2;
   });
 report
   .command("seats")
-  .description("Paid seats vs active users per provider per month")
+  .description("Paid seats vs active users per provider per month, with attribution coverage")
   .option("--team <uuid>")
   .option("--months <n>", "how many months back", "6")
   .option("--json", "output JSON instead of a table", false)
   .action(async (opts: { team?: string; months: string; json: boolean }) => {
-    const rows = await withDb((db) => seatUseReport(db, { ...(opts.team && { teamId: opts.team }), months: Number(opts.months) }));
+    const rows = await withDb((db) =>
+      seatUseReport(db, { ...(opts.team && { teamId: assertUuid(opts.team) }), months: assertWindow(Number(opts.months), "months", 120) }),
+    );
     console.log(opts.json ? JSON.stringify(rows, null, 2) : renderSeats(rows));
   });
 
@@ -87,17 +111,37 @@ const team = program.command("team").description("Manage teams (server-side)");
 team
   .command("create")
   .requiredOption("--name <name>")
-  .option("--budget <usd>", "weekly cap in USD")
+  .option("--budget <usd>", "weekly cap in USD (positive number)")
   .action(async (opts: { name: string; budget?: string }) => {
+    const name = opts.name.trim();
+    if (name.length < 1 || name.length > 120) throw new RangeError("team name must be 1 to 120 characters");
+    let capMicro: bigint | undefined;
+    if (opts.budget !== undefined) {
+      const usd = Number(opts.budget);
+      if (!Number.isFinite(usd) || usd <= 0) throw new RangeError(`budget must be a positive number of dollars, got "${opts.budget}"`);
+      capMicro = BigInt(Math.round(usd * 1_000_000));
+    }
     const id = await withDb(async (db) => {
-      const res = await db.query<{ id: string }>("insert into teams (name) values ($1) returning id", [opts.name]);
-      const teamId = res.rows[0]!.id;
-      if (opts.budget) {
-        await db.query("insert into budgets (team_id, weekly_cap_micro_usd) values ($1, $2)", [teamId, Math.round(Number(opts.budget) * MICRO)]);
+      await db.query("begin");
+      try {
+        const res = await db.query<{ id: string }>("insert into teams (name) values ($1) returning id", [name]);
+        const teamId = res.rows[0]!.id;
+        if (capMicro !== undefined) {
+          await db.query("insert into budgets (team_id, weekly_cap_micro_usd) values ($1, $2)", [teamId, capMicro.toString()]);
+        }
+        await db.query("commit");
+        return teamId;
+      } catch (err) {
+        await db.query("rollback");
+        throw err;
       }
-      return teamId;
     });
     console.log(id);
   });
 
-await program.parseAsync(process.argv);
+try {
+  await program.parseAsync(process.argv);
+} catch (err) {
+  console.error((err as Error).message);
+  process.exitCode = 1;
+}

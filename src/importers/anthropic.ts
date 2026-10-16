@@ -52,8 +52,9 @@ export const AnthropicUsageReport = z.object({
 });
 export type AnthropicUsageReport = z.infer<typeof AnthropicUsageReport>;
 
-export function parseAnthropicUsage(json: unknown): UsageRecord[] {
+export function parseAnthropicUsage(json: unknown, opts: { allowPartial?: boolean } = {}): UsageRecord[] {
   const pages = Array.isArray(json) ? json.map((p) => AnthropicUsageReport.parse(p)) : [AnthropicUsageReport.parse(json)];
+  assertComplete(pages, opts);
   const out: UsageRecord[] = [];
   for (const page of pages) {
     for (const bucket of page.data) {
@@ -88,6 +89,30 @@ export function parseAnthropicUsage(json: unknown): UsageRecord[] {
     }
   }
   return out;
+}
+
+export class IncompleteExportError extends Error {
+  constructor(detail: string) {
+    super(`Export is incomplete: ${detail}. Fetch every page (follow next_page until has_more is false) and pass them as a JSON array, or pass --allow-partial to import what is here.`);
+  }
+}
+
+/**
+ * A usage export is only trustworthy if it is the whole thing. The last page
+ * must say has_more=false; earlier pages must each have been followed by the
+ * next one (their next_page is non-null, and there is a page after them).
+ */
+export function assertComplete(pages: { has_more?: boolean | undefined; next_page?: string | null | undefined }[], opts: { allowPartial?: boolean }) {
+  if (opts.allowPartial || pages.length === 0) return;
+  const last = pages[pages.length - 1]!;
+  if (last.has_more === true || (last.has_more === undefined && last.next_page)) {
+    throw new IncompleteExportError(`the last page has has_more=true (${pages.length} page(s) supplied)`);
+  }
+  for (let i = 0; i < pages.length - 1; i++) {
+    if (pages[i]!.has_more === false) {
+      throw new IncompleteExportError(`page ${i + 1} is marked as the final page but ${pages.length - i - 1} more follow it`);
+    }
+  }
 }
 
 export function stableId(parts: (string | null | undefined)[]): string {

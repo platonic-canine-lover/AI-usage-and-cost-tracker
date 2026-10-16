@@ -8,7 +8,7 @@ import path from "node:path";
 import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parseAnthropicUsage } from "../../src/importers/anthropic.js";
-import { upsertUsage } from "../../src/importers/index.js";
+import { CrossTeamConflictError, UnknownTeamError, upsertUsage } from "../../src/importers/index.js";
 import { parseOpenAiUsage } from "../../src/importers/openai.js";
 import { loadPricing, MICRO, priceRecords } from "../../src/pricing.js";
 import { seatUseReport, weeklyBudgetReport } from "../../src/reports/index.js";
@@ -35,13 +35,13 @@ beforeAll(async () => {
   const anthropic = priceRecords(pricing, parseAnthropicUsage(await load("anthropic-usage-report.json"))).priced;
   const openai = priceRecords(pricing, parseOpenAiUsage(await load("openai-completions-usage.json"))).priced;
 
-  const a = await upsertUsage(db, team, anthropic, principals);
-  const o = await upsertUsage(db, team, openai, principals);
+  const a = await upsertUsage(db, team, anthropic, principals, { pricingVersion: pricing.version });
+  const o = await upsertUsage(db, team, openai, principals, { pricingVersion: pricing.version });
   expect(a).toEqual({ inserted: 3, updated: 0, unmappedPrincipals: [] });
   expect(o).toEqual({ inserted: 2, updated: 0, unmappedPrincipals: ["key_dave"] });
 
   // Re-import is a no-op in count terms.
-  const again = await upsertUsage(db, team, anthropic, principals);
+  const again = await upsertUsage(db, team, anthropic, principals, { pricingVersion: pricing.version });
   expect(again).toEqual({ inserted: 0, updated: 3, unmappedPrincipals: [] });
 
   // Weekly cap of $10 for the team; seats for Oct 2026 and Oct 2025.
@@ -58,6 +58,47 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await db.end();
+});
+
+describe("import ownership and provenance", () => {
+  it("refuses to import a record that another team already owns, and rolls back the whole batch", async () => {
+    const pricing = await loadPricing(path.join(fixtures, "pricing.test.json"));
+    const anthropic = priceRecords(pricing, parseAnthropicUsage(await load("anthropic-usage-report.json"))).priced;
+    const before = await db.query("select count(*)::int as n from usage_events");
+
+    await expect(upsertUsage(db, otherTeam, anthropic, principals)).rejects.toThrow(CrossTeamConflictError);
+
+    const after = await db.query("select count(*)::int as n from usage_events");
+    expect(after.rows[0]).toEqual(before.rows[0]);
+    const owners = await db.query<{ team_id: string }>("select distinct team_id from usage_events where provider = 'anthropic'");
+    expect(owners.rows.map((r) => r.team_id)).toEqual([team]);
+  });
+
+  it("the row-level guard holds even if the pre-check is bypassed", async () => {
+    // Simulate a concurrent import racing past the SELECT: an UPSERT from the other team must affect zero rows.
+    const row = await db.query<{ external_id: string }>("select external_id from usage_events where provider = 'anthropic' limit 1");
+    const res = await db.query(
+      `insert into usage_events (team_id, provider, model, external_id, cost_micro_usd, occurred_at)
+       values ($1, 'anthropic', 'x', $2, 1, now())
+       on conflict (provider, external_id) do update set cost_micro_usd = excluded.cost_micro_usd
+       where usage_events.team_id = excluded.team_id
+       returning team_id`,
+      [otherTeam, row.rows[0]!.external_id],
+    );
+    expect(res.rowCount).toBe(0);
+  });
+
+  it("refuses an unknown team before touching anything", async () => {
+    await expect(upsertUsage(db, newUserId(), [], principals)).rejects.toThrow(UnknownTeamError);
+  });
+
+  it("stamps every row with the pricing version that produced its cost", async () => {
+    const res = await db.query<{ pricing_version: string; n: string }>(
+      "select pricing_version, count(*) as n from usage_events group by pricing_version",
+    );
+    expect(res.rows).toHaveLength(1);
+    expect(res.rows[0]!.pricing_version).toMatch(/^sha256:/);
+  });
 });
 
 describe("weekly budget report", () => {
@@ -89,10 +130,23 @@ describe("seat-use report", () => {
   it("compares paid seats with people who actually generated usage", async () => {
     const rows = await seatUseReport(db, { teamId: team, months: 1 });
     const anthropicOct = rows.find((r) => r.provider === "anthropic" && r.month_start === "2026-10-01");
-    expect(anthropicOct).toMatchObject({ paid_seats: 3, active_users: 2, idle_seats: 1 });
+    expect(anthropicOct).toMatchObject({ paid_seats: 3, active_users: 2, idle_seats: 1, over_subscribed: false });
     expect(anthropicOct!.seat_cost_micro_usd).toBe(String(60 * MICRO));
     expect(anthropicOct!.usage_cost_micro_usd).toBe(String(11_760_000));
+    expect(anthropicOct!.unattributed_cost_micro_usd).toBe("0");
+    expect(Number(anthropicOct!.attribution_coverage)).toBe(1);
   });
+
+  it("reports attribution coverage and unattributed spend instead of hiding unmapped users", async () => {
+    const rows = await seatUseReport(db, { teamId: team, months: 14 });
+    const openaiOct = rows.find((r) => r.provider === "openai" && r.month_start === "2025-10-01");
+    // key_dave was unmapped: his $1.05 (90k*$5 + 30k*$20)/1M is counted in usage cost but not attributed.
+    expect(openaiOct).toMatchObject({ paid_seats: 1, active_users: 1, over_subscribed: false });
+    expect(openaiOct!.usage_cost_micro_usd).toBe(String(4_200_000));
+    expect(openaiOct!.unattributed_cost_micro_usd).toBe(String(1_050_000));
+    expect(Number(openaiOct!.attribution_coverage)).toBe(0.5);
+  });
+
 
   it("counts a usage-only month with no seats as zero paid seats", async () => {
     const rows = await db.query<{ paid_seats: number; active_users: number }>(
@@ -101,6 +155,17 @@ describe("seat-use report", () => {
     );
     // One paid openai seat (alice) but the usage was from carol (mapped) and dave (unmapped → not counted)
     expect(rows.rows[0]).toEqual({ paid_seats: 1, active_users: 1 });
+  });
+
+  it("flags months with more active users than paid seats rather than clamping silently", async () => {
+    // Add a second mapped OpenAI user for Oct 2025 by re-importing with dave mapped: 2 active users, 1 seat.
+    const pricing = await loadPricing(path.join(fixtures, "pricing.test.json"));
+    const openai = priceRecords(pricing, parseOpenAiUsage(await load("openai-completions-usage.json"))).priced;
+    await upsertUsage(db, team, openai, { ...principals, key_dave: newUserId() });
+    const rows = await seatUseReport(db, { teamId: team, months: 14 });
+    const openaiOct = rows.find((r) => r.provider === "openai" && r.month_start === "2025-10-01");
+    expect(openaiOct).toMatchObject({ paid_seats: 1, active_users: 2, idle_seats: 0, over_subscribed: true });
+    expect(Number(openaiOct!.attribution_coverage)).toBe(1);
   });
 });
 
