@@ -37,6 +37,19 @@
           "source": "https://venturebeat.com/technology/qwen3-8-27b-runs-frontier-class-coding-agents-and-reasoning-locally-no-cloud-api-required",
           "note": "Third-party; the model used 160M output tokens across the index, far above the 43M median for comparable open models, i.e. it reasons at length by default."
         }
+      },
+      "working_context_tokens": 32768,
+      "kv_cache_gb_per_1k_tokens": {
+        "value": 0.125,
+        "basis": "estimate",
+        "source": "https://venturebeat.com/technology/qwen3-8-27b-runs-frontier-class-coding-agents-and-reasoning-locally-no-cloud-api-required",
+        "note": "PLACEHOLDER. The article gives no KV-cache figure and the model card's layer / KV-head / head-dim counts were not checked. Compute it as 2 \u00d7 layers \u00d7 kv_heads \u00d7 head_dim \u00d7 bytes_per_value \u00f7 1e9 per token (\u00d71000 per 1k tokens), or read it off llama.cpp's startup log (`KV self size`) at your context length, then set basis to measured."
+      },
+      "runtime_overhead_gb": {
+        "value": 1.5,
+        "basis": "estimate",
+        "source": "https://terminalbytes.com/run-qwen-3-8-27b-locally/",
+        "note": "PLACEHOLDER for compute buffers; read the real figure from llama.cpp's startup log."
       }
     }
   ],
@@ -87,5 +100,9 @@
     "openai/gpt-5": {}
   },
   "_comment_cloud_benchmarks": "Add the published scores for the cloud models you actually use, keyed provider/model-prefix, so the report can show parity. Left empty on purpose: the comparison article asserts the local model beats or trails specific Claude and GPT models on named benchmarks but does not print those models' scores, so there is nothing to copy without inventing it.",
-  "_comment_price": "price_usd is the $899 US base price (https://www.techrepublic.com/article/news-mac-mini-m6-cheat-sheet/) plus a placeholder $400 for the 32 GB configure-to-order upgrade, which Apple had not published at the time; replace with what you paid."
+  "_comment_price": "price_usd is the $899 US base price (https://www.techrepublic.com/article/news-mac-mini-m6-cheat-sheet/) plus a placeholder $400 for the 32 GB configure-to-order upgrade, which Apple had not published at the time; replace with what you paid.",
+  "human": {
+    "hourly_usd": 60
+  },
+  "_comment_human": "hourly_usd prices review and correction time. Record real outcomes with `pnpm cli task record` for both the cloud model and the local one; until there are any, set default_review_minutes_per_task to an assumption (it is labelled as assumed in the report) or leave it null to show 'not recorded'."
 }

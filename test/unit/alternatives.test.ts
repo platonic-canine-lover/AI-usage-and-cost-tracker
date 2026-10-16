@@ -1,6 +1,6 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { estimateLocal, loadAlternatives, type LocalModel, type Machine, type MonthlyVolume } from "../../src/alternatives.js";
+import { estimateLocal, humanSide, loadAlternatives, memoryCheck, type LocalModel, type Machine, type MonthlyVolume } from "../../src/alternatives.js";
 
 const model: LocalModel = {
   id: "m",
@@ -38,6 +38,8 @@ const volume: MonthlyVolume = {
   outputTokens: 1_800_000n, // 180,000 s at 10 tok/s = 50 h
   cloudCostMicroUsd: 200_000_000n, // $200
   daysInMonth: 30, // 720 h
+  monthToDate: false,
+  daysCovered: 30,
 };
 
 describe("local alternative estimate", () => {
@@ -78,9 +80,65 @@ describe("local alternative estimate", () => {
     expect(e.wallClockHours).toBe(50);
   });
 
-  it("checks the model fits beside the OS headroom", () => {
-    expect(estimateLocal(volume, model, machine).fitsInMemory).toBe(true);
-    expect(estimateLocal(volume, { ...model, file_size_gb: { ...model.file_size_gb, value: 28 } }, machine).fitsInMemory).toBe(false);
+  it("memory check: weights alone give an unverified verdict, not a pass", () => {
+    const m = memoryCheck(model, machine);
+    expect(m.weightsFit).toBe(true);
+    expect(m.fullContextFits).toBeNull();
+    expect(m.verdict).toMatch(/full-context feasibility unverified/);
+    expect(memoryCheck({ ...model, file_size_gb: { ...model.file_size_gb, value: 28 } }, machine).weightsFit).toBe(false);
+  });
+
+  it("memory check: with a KV cache figure it sizes the cache for the working context and can fail", () => {
+    const withKv: LocalModel = {
+      ...model,
+      context_tokens: 262_144,
+      working_context_tokens: 32_768,
+      kv_cache_gb_per_1k_tokens: { value: 0.125, basis: "estimate", source: "s" }, // 4 GB at 32k
+      runtime_overhead_gb: { value: 1.5, basis: "estimate", source: "s" },
+    };
+    const ok = memoryCheck(withKv, machine); // 17 + 4 + 1.5 = 22.5 ≤ 26
+    expect(ok.kvCacheGb).toBeCloseTo(4.096, 3);
+    expect(ok.fullContextFits).toBe(true);
+    const noWorking: LocalModel = { ...withKv };
+    delete noWorking.working_context_tokens;
+    const full = memoryCheck(noWorking, machine); // sized for 262k: 32.8 GB
+    expect(full.fullContextFits).toBe(false);
+    expect(full.verdict).toMatch(/EXCEED/);
+  });
+
+  it("month-to-date volumes scale available hours, idle energy and hardware share to the elapsed days", () => {
+    const mtd = { ...volume, monthToDate: true, daysCovered: 10 }; // 240 h window
+    const e = estimateLocal(mtd, model, machine);
+    expect(e.monthHours).toBe(240);
+    expect(e.utilisation).toBeCloseTo(150 / 240, 6);
+    // active 100 W × 150 h = 15 kWh; idle 10 W × 90 h = 0.9 kWh; 15.9 × $0.5 = $7.95
+    expect(e.energyCostMicroUsd).toBe(7_950_000n);
+    // hardware: $100/month × 10/30
+    expect(e.hardwareDedicatedMicroUsd).toBe(33_333_333n);
+  });
+
+  it("human side: no hourly rate → not costed; recorded outcomes → per-attempt and per-accepted cost", () => {
+    expect(estimateLocal(volume, model, machine).human).toBeNull();
+    const human = { hourly_usd: 60 };
+    const recorded = humanSide({ attempts: 10, accepted: 8, avgReviewMinutes: 15, avgRetries: 0.5, acceptanceRate: 0.8 }, human);
+    expect(recorded.basis).toBe("recorded");
+    expect(recorded.reviewCostPerAttemptMicroUsd).toBe(15_000_000n); // 15 min at $60/h = $15
+    expect(recorded.reviewCostPerAcceptedMicroUsd).toBe(18_750_000n); // $15 / 0.8
+    const assumed = humanSide(undefined, { hourly_usd: 60, default_review_minutes_per_task: 5 });
+    expect(assumed).toMatchObject({ basis: "assumed", reviewCostPerAttemptMicroUsd: 5_000_000n, reviewCostPerAcceptedMicroUsd: null });
+    expect(humanSide(undefined, human).basis).toBe("none");
+    expect(humanSide({ attempts: 3, accepted: 0, avgReviewMinutes: 30, avgRetries: 2, acceptanceRate: 0 }, human).reviewCostPerAcceptedMicroUsd).toBeNull();
+  });
+
+  it("human side is attached per model and kept separate from machine cost", () => {
+    const e = estimateLocal(volume, model, machine, {}, {
+      human: { hourly_usd: 60 },
+      localQuality: { attempts: 4, accepted: 2, avgReviewMinutes: 20, avgRetries: 1, acceptanceRate: 0.5 },
+      cloudQuality: { attempts: 4, accepted: 4, avgReviewMinutes: 5, avgRetries: 0, acceptanceRate: 1 },
+    });
+    expect(e.human!.local.reviewCostPerAcceptedMicroUsd).toBe(40_000_000n); // $20 / 0.5
+    expect(e.human!.cloud.reviewCostPerAcceptedMicroUsd).toBe(5_000_000n);
+    expect(e.localCostDedicatedMicroUsd).toBe(110_350_000n); // unchanged by human figures
   });
 
   it("shows benchmark parity only where a cloud score was supplied, and never a probability", () => {

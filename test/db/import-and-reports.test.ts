@@ -225,12 +225,57 @@ describe("reports through RLS", () => {
 describe("local alternative report", () => {
   it("aggregates monthly prompt and output volume per team, provider and model from imported usage", async () => {
     const { monthlyVolumes } = await import("../../src/reports/local.js");
-    const vols = await monthlyVolumes(db, { teamId: team, months: 14 });
+    const vols = await monthlyVolumes(db, { teamId: team, months: 14, includeCurrent: true, now: new Date("2026-10-20T12:00:00Z") });
     const sonnet = vols.find((v) => v.model === "claude-sonnet-5-5-20260601");
     // 1.2M uncached + 100k cache write + 800k cache read = 2.1M prompt; 300k output
-    expect(sonnet).toMatchObject({ provider: "anthropic", monthStart: "2026-10-01", promptTokens: 2_100_000n, outputTokens: 300_000n, daysInMonth: 31 });
+    expect(sonnet).toMatchObject({ provider: "anthropic", monthStart: "2026-10-01", promptTokens: 2_100_000n, outputTokens: 300_000n, daysInMonth: 31, monthToDate: true, daysCovered: 20 });
     expect(sonnet!.cloudCostMicroUsd).toBe(5_810_000n);
     const mini = vols.find((v) => v.model === "gpt-5-mini");
-    expect(mini).toMatchObject({ promptTokens: 2_000_000n, outputTokens: 400_000n, monthStart: "2025-10-01" });
+    expect(mini).toMatchObject({ promptTokens: 2_000_000n, outputTokens: 400_000n, monthStart: "2025-10-01", monthToDate: false, daysCovered: 31 });
+  });
+});
+
+describe("local alternative report: months and human time", () => {
+  it("excludes the current month by default and returns exactly the completed months asked for", async () => {
+    const { monthlyVolumes } = await import("../../src/reports/local.js");
+    // Pretend it is 20 Oct 2026: Oct 2026 is month-to-date, Oct 2025 is 12 completed months back.
+    const now = new Date("2026-10-20T12:00:00Z");
+    const completed = await monthlyVolumes(db, { teamId: team, months: 12, now });
+    expect(completed.map((v) => v.monthStart)).not.toContain("2026-10-01");
+    expect(completed.some((v) => v.monthStart === "2025-10-01")).toBe(true);
+    expect(completed.every((v) => !v.monthToDate && v.daysCovered === v.daysInMonth)).toBe(true);
+
+    const three = await monthlyVolumes(db, { teamId: team, months: 3, now });
+    expect(three).toHaveLength(0); // Oct 2025 is older than 3 completed months; Oct 2026 is excluded
+
+    const withCurrent = await monthlyVolumes(db, { teamId: team, months: 3, now, includeCurrent: true });
+    const oct = withCurrent.filter((v) => v.monthStart === "2026-10-01");
+    expect(oct.length).toBeGreaterThan(0);
+    expect(oct.every((v) => v.monthToDate && v.daysCovered === 20 && v.daysInMonth === 31)).toBe(true);
+  });
+
+  it("records task outcomes under RLS and aggregates them per model", async () => {
+    const { taskQuality } = await import("../../src/reports/local.js");
+    await asUser(db, owner, async (tx) => {
+      await tx.query(
+        `insert into task_outcomes (team_id, provider, model, task, review_minutes, retries, accepted) values
+           ($1, 'local', 'qwen3.8-27b-q4_k_m', 'digest', 20, 1, true),
+           ($1, 'local', 'qwen3.8-27b-q4_k_m', 'digest', 40, 2, false),
+           ($1, 'anthropic', 'claude-haiku-5-5', 'digest', 5, 0, true)`,
+        [team],
+      );
+    });
+    // the other team's owner cannot see or write them
+    const foreign = await asUser(db, outsider, (tx) => tx.query("select 1 from task_outcomes"));
+    expect(foreign.rowCount).toBe(0);
+    await expect(
+      asUser(db, outsider, (tx) =>
+        tx.query("insert into task_outcomes (team_id, provider, model, task, review_minutes, accepted) values ($1, 'local', 'x', 'y', 1, true)", [team]),
+      ),
+    ).rejects.toThrow(/row-level security/);
+
+    const q = await taskQuality(db, team);
+    expect(q.get(`${team}|local|qwen3.8-27b-q4_k_m`)).toEqual({ attempts: 2, accepted: 1, avgReviewMinutes: 30, avgRetries: 1.5, acceptanceRate: 0.5 });
+    expect(q.get(`${team}|anthropic|claude-haiku-5-5`)).toEqual({ attempts: 1, accepted: 1, avgReviewMinutes: 5, avgRetries: 0, acceptanceRate: 1 });
   });
 });

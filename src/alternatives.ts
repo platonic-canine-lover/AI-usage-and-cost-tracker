@@ -42,7 +42,14 @@ const LocalModel = z.object({
   parameters_b: z.number().positive(),
   quantisation: z.string().min(1),
   file_size_gb: Sourced,
+  /** Maximum context the model supports. */
   context_tokens: z.number().int().positive().optional(),
+  /** Context you intend to run with; the KV cache is sized for this, not the maximum. */
+  working_context_tokens: z.number().int().positive().optional(),
+  /** KV cache memory per 1,000 tokens of context, at the cache precision you run. Unknown → memory check is partial. */
+  kv_cache_gb_per_1k_tokens: Sourced.optional(),
+  /** Runtime overhead beyond weights and KV cache (compute buffers, Metal/CUDA allocations). */
+  runtime_overhead_gb: Sourced.optional(),
   licence: z.string().optional(),
   benchmarks: z.record(BenchmarkScore).default({}),
 });
@@ -67,9 +74,18 @@ const Machine = z.object({
 });
 export type Machine = z.infer<typeof Machine>;
 
+const Human = z.object({
+  /** What an hour of the reviewer's time is worth. */
+  hourly_usd: z.number().nonnegative(),
+  /** Minutes a person spends per task when no task_outcomes are recorded for the model: a fallback assumption, labelled as such. */
+  default_review_minutes_per_task: z.number().nonnegative().optional(),
+});
+export type Human = z.infer<typeof Human>;
+
 export const AlternativesFile = z.object({
   version: z.string().min(1).optional(),
   as_of: z.string().optional(),
+  human: Human.optional(),
   local_models: z.array(LocalModel).min(1),
   machines: z.array(Machine).min(1),
   /** Published scores for the cloud models you use, keyed "provider/model-prefix", so the report can show parity. */
@@ -93,13 +109,35 @@ export interface MonthlyVolume {
   outputTokens: bigint;
   cloudCostMicroUsd: bigint;
   daysInMonth: number;
+  /** True when the month is the current one and therefore incomplete. */
+  monthToDate: boolean;
+  /** Days of the month covered: daysInMonth for a complete month, elapsed days for the current one. */
+  daysCovered: number;
+}
+
+/** Recorded human effort for a model, from the task_quality view. */
+export interface TaskQuality {
+  attempts: number;
+  accepted: number;
+  avgReviewMinutes: number;
+  avgRetries: number;
+  acceptanceRate: number;
 }
 
 export interface LocalEstimate {
   volume: MonthlyVolume;
   model: LocalModel;
   machine: Machine;
-  fitsInMemory: boolean;
+  memory: {
+    weightsGb: number;
+    kvCacheGb: number | null;
+    overheadGb: number | null;
+    availableGb: number;
+    weightsFit: boolean;
+    /** null when the KV cache size is unknown: "weights fit; full-context feasibility unverified". */
+    fullContextFits: boolean | null;
+    verdict: string;
+  };
   promptSeconds: number;
   generationSeconds: number;
   /** Wall-clock hours with the machine's concurrency applied. */
@@ -116,18 +154,77 @@ export interface LocalEstimate {
   localCostDedicatedMicroUsd: bigint;
   localCostProratedMicroUsd: bigint;
   cloudCostMicroUsd: bigint;
+  /** Human side, present only when a hourly rate is configured. Local and cloud are shown side by side, each marked recorded or assumed. */
+  human: {
+    hourlyUsd: number;
+    local: HumanSide;
+    cloud: HumanSide;
+  } | null;
   throughputBasis: "measured" | "estimate" | "spec";
   parity: { benchmark: string; local: number; cloud: number | null; ratio: number | null; localSource: string; cloudSource: string | null }[];
 }
 
+export interface HumanSide {
+  basis: "recorded" | "assumed" | "none";
+  attempts: number;
+  acceptanceRate: number | null;
+  avgReviewMinutes: number | null;
+  avgRetries: number | null;
+  /** Review time at the hourly rate, per attempt. */
+  reviewCostPerAttemptMicroUsd: bigint | null;
+  /** Review cost per accepted result: per-attempt cost ÷ acceptance rate. null if nothing was accepted. */
+  reviewCostPerAcceptedMicroUsd: bigint | null;
+}
+
 const MICRO = 1_000_000;
 const toMicro = (usd: number): bigint => BigInt(Math.round(usd * MICRO));
+
+export function humanSide(quality: TaskQuality | undefined, human: Human | undefined): HumanSide {
+  const none: HumanSide = { basis: "none", attempts: 0, acceptanceRate: null, avgReviewMinutes: null, avgRetries: null, reviewCostPerAttemptMicroUsd: null, reviewCostPerAcceptedMicroUsd: null };
+  if (!human) return none;
+  if (quality && quality.attempts > 0) {
+    const perAttempt = toMicro((quality.avgReviewMinutes / 60) * human.hourly_usd);
+    return {
+      basis: "recorded",
+      attempts: quality.attempts,
+      acceptanceRate: quality.acceptanceRate,
+      avgReviewMinutes: quality.avgReviewMinutes,
+      avgRetries: quality.avgRetries,
+      reviewCostPerAttemptMicroUsd: perAttempt,
+      reviewCostPerAcceptedMicroUsd: quality.acceptanceRate > 0 ? toMicro(((quality.avgReviewMinutes / 60) * human.hourly_usd) / quality.acceptanceRate) : null,
+    };
+  }
+  if (human.default_review_minutes_per_task !== undefined) {
+    const perAttempt = toMicro((human.default_review_minutes_per_task / 60) * human.hourly_usd);
+    return { basis: "assumed", attempts: 0, acceptanceRate: null, avgReviewMinutes: human.default_review_minutes_per_task, avgRetries: null, reviewCostPerAttemptMicroUsd: perAttempt, reviewCostPerAcceptedMicroUsd: null };
+  }
+  return none;
+}
+
+export function memoryCheck(model: LocalModel, machine: Machine): LocalEstimate["memory"] {
+  const availableGb = machine.memory_gb - machine.os_headroom_gb;
+  const weightsGb = model.file_size_gb.value;
+  const context = model.working_context_tokens ?? model.context_tokens ?? null;
+  const kvCacheGb = model.kv_cache_gb_per_1k_tokens && context ? (model.kv_cache_gb_per_1k_tokens.value * context) / 1000 : null;
+  const overheadGb = model.runtime_overhead_gb?.value ?? null;
+  const weightsFit = weightsGb <= availableGb;
+  const fullContextFits = kvCacheGb === null ? null : weightsGb + kvCacheGb + (overheadGb ?? 0) <= availableGb;
+  const verdict = !weightsFit
+    ? `weights (${weightsGb} GB) do not fit in ${availableGb} GB available`
+    : fullContextFits === null
+      ? `weights fit (${weightsGb} of ${availableGb} GB); full-context feasibility unverified: no kv_cache_gb_per_1k_tokens supplied`
+      : fullContextFits
+        ? `weights ${weightsGb} GB + KV cache ${kvCacheGb!.toFixed(1)} GB at ${context} tokens${overheadGb !== null ? ` + overhead ${overheadGb} GB` : ""} fit in ${availableGb} GB [KV figure: ${model.kv_cache_gb_per_1k_tokens!.basis}]`
+        : `weights ${weightsGb} GB + KV cache ${kvCacheGb!.toFixed(1)} GB at ${context} tokens${overheadGb !== null ? ` + overhead ${overheadGb} GB` : ""} EXCEED ${availableGb} GB; reduce working_context_tokens [KV figure: ${model.kv_cache_gb_per_1k_tokens!.basis}]`;
+  return { weightsGb, kvCacheGb, overheadGb, availableGb, weightsFit, fullContextFits, verdict };
+}
 
 export function estimateLocal(
   volume: MonthlyVolume,
   model: LocalModel,
   machine: Machine,
   cloudBenchmarks: AlternativesFile["cloud_benchmarks"] = {},
+  opts: { human?: Human | undefined; localQuality?: TaskQuality | undefined; cloudQuality?: TaskQuality | undefined } = {},
 ): LocalEstimate {
   const promptTps = machine.prompt_tokens_per_sec.value;
   const genTps = machine.generation_tokens_per_sec.value;
@@ -137,7 +234,8 @@ export function estimateLocal(
   const generationSeconds = Number(volume.outputTokens) / genTps;
   const busySeconds = promptSeconds + generationSeconds;
   const wallClockHours = busySeconds / 3600 / machine.concurrency;
-  const monthHours = volume.daysInMonth * 24;
+  // For the current month, compare month-to-date usage with month-to-date hours, idle time and hardware share.
+  const monthHours = volume.daysCovered * 24;
   const utilisation = wallClockHours / monthHours;
   const feasible = utilisation <= 1;
 
@@ -146,10 +244,11 @@ export function estimateLocal(
   const idleKwh = (machine.watts_idle.value * Math.max(monthHours - wallClockHours, 0)) / 1000;
   const energyCostMicroUsd = toMicro((activeKwh + idleKwh) * machine.electricity_usd_per_kwh);
 
-  const hardwareDedicatedMicroUsd = toMicro(machine.price_usd / machine.amortise_months);
-  const hardwareProratedMicroUsd = toMicro((machine.price_usd / machine.amortise_months) * Math.min(utilisation, 1));
+  const monthShare = volume.daysCovered / volume.daysInMonth;
+  const hardwareDedicatedMicroUsd = toMicro((machine.price_usd / machine.amortise_months) * monthShare);
+  const hardwareProratedMicroUsd = toMicro((machine.price_usd / machine.amortise_months) * monthShare * Math.min(utilisation, 1));
 
-  const fitsInMemory = model.file_size_gb.value <= machine.memory_gb - machine.os_headroom_gb;
+  const memory = memoryCheck(model, machine);
 
   const cloudKey = Object.keys(cloudBenchmarks)
     .filter((k) => `${volume.provider}/${volume.model}`.startsWith(k))
@@ -178,7 +277,7 @@ export function estimateLocal(
     volume,
     model,
     machine,
-    fitsInMemory,
+    memory,
     promptSeconds,
     generationSeconds,
     wallClockHours,
@@ -191,6 +290,9 @@ export function estimateLocal(
     localCostDedicatedMicroUsd: energyCostMicroUsd + hardwareDedicatedMicroUsd,
     localCostProratedMicroUsd: energyCostMicroUsd + hardwareProratedMicroUsd,
     cloudCostMicroUsd: volume.cloudCostMicroUsd,
+    human: opts.human
+      ? { hourlyUsd: opts.human.hourly_usd, local: humanSide(opts.localQuality, opts.human), cloud: humanSide(opts.cloudQuality, opts.human) }
+      : null,
     throughputBasis: basis(),
     parity,
   };

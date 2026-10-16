@@ -156,10 +156,32 @@ with 32 GB, with a source on every figure.
   cloud cost  $4.50
   local time  3.9 days of 31.0 days available  (13% utilisation)  [throughput estimate: 19 prompt tok/s, 8 gen tok/s]
   local cost  $39.02 dedicated ($2.93 energy + $36.08 hardware/month), $7.45 if shared (hardware prorated by utilisation)
-  memory      17 GB model in 32 GB (6 GB headroom): fits
+  memory      weights 17 GB + KV cache 4.1 GB at 32768 tokens + overhead 1.5 GB fit in 26 GB [KV figure: estimate]
+  human       at $60/h (machine time above excludes this)
+    local  30 min review/attempt → $30.00/attempt, $60.00/accepted result (50% accepted, 0.5 retries avg) [recorded, 2 attempts]
+    cloud  5 min review/attempt → $5.00/attempt, $5.00/accepted result (100% accepted, 0 retries avg) [recorded, 1 attempts]
   benchmarks  (local score / cloud score, both as published; not a probability)
-    SWE-bench Pro                61.7     vs cloud score not supplied
+    SWE-bench Pro                          61.7     vs cloud score not supplied
 ```
+
+Three rules shape it:
+
+- **Completed months only, by default.** Month-to-date cloud usage is never
+  set against a full month of local running cost. `--include-current` adds
+  the current month, labelled MONTH-TO-DATE, with available hours, idle
+  energy and the hardware share all scaled to the elapsed days.
+- **Human time is a separate line, never folded into machine time.** Set
+  `human.hourly_usd` and record outcomes with `pnpm cli task record` (review
+  minutes, retries, accepted or rejected) for both the cloud model and the
+  local one. The report then shows review cost per attempt and per accepted
+  result for each, marked `recorded`; with no outcomes it shows `assumed` if
+  you set a default, otherwise "not recorded". A local model that is cheap per
+  token and expensive per finished task shows up as exactly that.
+- **The memory check says what it checked.** Weights alone give "weights fit;
+  full-context feasibility unverified". Supply `kv_cache_gb_per_1k_tokens`
+  (from llama.cpp's startup log, or 2 × layers × KV heads × head dim × bytes)
+  and `working_context_tokens` and it adds the cache and runtime overhead and
+  can fail. The example file's KV figure is a labelled placeholder.
 
 How it is worked out, and what it will not do:
 
@@ -201,7 +223,7 @@ How it is worked out, and what it will not do:
 | Team-scoped row-level security | Implemented and tested; not yet adversarially reviewed by a third party |
 | Fetching from the provider APIs on a schedule | Not implemented: you pass the JSON you fetched |
 | Live spend enforcement (blocking calls at the cap) | Not implemented, and out of scope here; it needs a check in the request path, not a report |
-| Local-model comparison (time, energy, amortised hardware, benchmark parity) | Implemented; throughput figures must be measured by you |
+| Local-model comparison (time, energy, amortised hardware, human review time, memory, benchmark parity) | Implemented; throughput and KV-cache figures must be measured by you, and human time only counts once you record outcomes |
 | Alerts, notifications, dashboard, onboarding | Not implemented |
 
 The weekly cap flags a team after the spend is imported. If you need calls
@@ -250,7 +272,7 @@ provider; this repository can supply the numbers it consults.
 ## Layout
 
 ```
-supabase/migrations/   versioned SQL, applied in order (five so far; 000400 and 000500 are review follow-ups applied incrementally)
+supabase/migrations/   versioned SQL, applied in order (six so far; 000400 onwards are review follow-ups applied incrementally)
 scripts/               migrate.ts (plain Postgres runner), reset.ts, auth-shim.sql
 src/importers/         anthropic.ts, openai.ts, index.ts (upsert)
 src/pricing.ts         pricing table, micro-dollar maths

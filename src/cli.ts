@@ -6,7 +6,8 @@
  *   pnpm cli import openai    --team <uuid> --file usage.json --pricing pricing.json [--principals map.json]
  *   pnpm report weekly    [--team <uuid>] [--weeks 8]
  *   pnpm report seats     [--team <uuid>] [--months 6]
- *   pnpm report local     --alternatives alternatives.json [--team <uuid>] [--months 3]
+ *   pnpm report local     --alternatives alternatives.json [--team <uuid>] [--months 3] [--include-current]
+ *   pnpm cli task record  --team <uuid> --model local:qwen3.8-27b-q4_k_m --task "weekly digest" --review-minutes 12 --accepted
  *   pnpm cli team create --name "Platform" [--budget 250]
  *
  * All commands connect with DATABASE_URL. They are server-side tools, so they
@@ -26,7 +27,7 @@ import { parsers, upsertUsage } from "./importers/index.js";
 import { formatUsd, loadPricing, priceRecords, sumMicroUsd } from "./pricing.js";
 import { loadAlternatives } from "./alternatives.js";
 import { assertUuid, assertWindow, renderSeats, renderWeekly, seatUseReport, weeklyBudgetReport } from "./reports/index.js";
-import { localAlternativeReport, monthlyVolumes, renderLocal } from "./reports/local.js";
+import { localAlternativeReport, monthlyVolumes, renderLocal, taskQuality } from "./reports/local.js";
 import type { Provider } from "./types.js";
 
 const PrincipalMapSchema = z.record(z.string().min(1), z.string().uuid());
@@ -118,14 +119,17 @@ report
   .description("What the same monthly token volume would cost, and how long it would take, on a local model and machine you own")
   .requiredOption("--alternatives <path>", "local models and machines JSON (see alternatives.example.json)")
   .option("--team <uuid>")
-  .option("--months <n>", "how many months back", "3")
+  .option("--months <n>", "how many completed months back", "3")
+  .option("--include-current", "also show the current month, labelled month-to-date and scaled to elapsed days", false)
   .option("--json", "output JSON instead of text", false)
-  .action(async (opts: { alternatives: string; team?: string; months: string; json: boolean }) => {
+  .action(async (opts: { alternatives: string; team?: string; months: string; includeCurrent: boolean; json: boolean }) => {
     const alt = await loadAlternatives(opts.alternatives);
-    const volumes = await withDb((db) =>
-      monthlyVolumes(db, { ...(opts.team && { teamId: assertUuid(opts.team) }), months: assertWindow(Number(opts.months), "months", 120) }),
-    );
-    const estimates = localAlternativeReport(volumes, alt);
+    const teamId = opts.team ? assertUuid(opts.team) : undefined;
+    const { volumes, quality } = await withDb(async (db) => ({
+      volumes: await monthlyVolumes(db, { ...(teamId && { teamId }), months: assertWindow(Number(opts.months), "months", 120), includeCurrent: opts.includeCurrent }),
+      quality: await taskQuality(db, teamId),
+    }));
+    const estimates = localAlternativeReport(volumes, alt, quality);
     console.log(
       opts.json
         ? JSON.stringify(estimates, (_k, v: unknown) => (typeof v === "bigint" ? v.toString() : v), 2)
@@ -134,6 +138,38 @@ report
     if (estimates.some((e) => e.throughputBasis !== "measured")) {
       console.warn("NOTE: at least one throughput figure is an estimate or a spec ceiling, not a measurement; time and cost scale directly with it.");
     }
+  });
+
+const task = program.command("task").description("Record what a result cost in human time, so the local report can price it");
+task
+  .command("record")
+  .requiredOption("--team <uuid>")
+  .requiredOption("--model <id>", "provider:model, e.g. anthropic:claude-sonnet-5-5 or local:<alternatives model id>")
+  .requiredOption("--task <label>", "what the task was (1 to 200 characters)")
+  .requiredOption("--review-minutes <n>", "minutes a person spent checking or correcting the result")
+  .option("--retries <n>", "how many times it had to be re-run", "0")
+  .option("--accepted", "the result was usable", false)
+  .option("--rejected", "the result was not usable", false)
+  .option("--user <uuid>", "who reviewed it")
+  .option("--note <text>")
+  .action(async (opts: { team: string; model: string; task: string; reviewMinutes: string; retries: string; accepted: boolean; rejected: boolean; user?: string; note?: string }) => {
+    const teamId = assertUuid(opts.team);
+    const m = /^(anthropic|openai|local):(.+)$/.exec(opts.model);
+    if (!m) throw new RangeError(`--model must be provider:model with provider anthropic, openai or local, got "${opts.model}"`);
+    if (opts.accepted === opts.rejected) throw new RangeError("pass exactly one of --accepted or --rejected");
+    const minutes = Number(opts.reviewMinutes);
+    const retries = Number(opts.retries);
+    if (!Number.isFinite(minutes) || minutes < 0) throw new RangeError("--review-minutes must be a non-negative number");
+    if (!Number.isInteger(retries) || retries < 0) throw new RangeError("--retries must be a non-negative integer");
+    const id = await withDb(async (db) => {
+      const res = await db.query<{ id: string }>(
+        `insert into task_outcomes (team_id, user_id, provider, model, task, review_minutes, retries, accepted, note)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id`,
+        [teamId, opts.user ? assertUuid(opts.user, "user id") : null, m[1], m[2], opts.task.trim(), minutes, retries, opts.accepted, opts.note ?? null],
+      );
+      return res.rows[0]!.id;
+    });
+    console.log(id);
   });
 
 const team = program.command("team").description("Manage teams (server-side)");
