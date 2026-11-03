@@ -82,7 +82,9 @@ Three rules keep the numbers trustworthy, and each has a test:
    cache writes, cache reads and output are stored and priced separately.
    A known model with tokens in a category that has no rate in the pricing
    file fails the import (`UnpricedCategoryError`): a cache write is never
-   silently priced at the input rate. Unknown models fail unless
+   silently priced at the input rate. A pricing key matches its exact model
+   id or a dated snapshot of it, nothing looser, so `gpt-5` never prices
+   `gpt-5-nano`. Unknown models fail unless
    `--allow-unknown-models`, in which case they are imported at $0 and listed.
    Every row records the pricing `version` label and the file's content hash,
    and the full configuration is kept in `pricing_snapshots` keyed by hash,

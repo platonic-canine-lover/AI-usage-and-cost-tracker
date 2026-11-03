@@ -1,5 +1,5 @@
 {
-  "_comment": "USD per million tokens, one rate per token category. Copy to pricing.json and fill in from the providers' current pricing pages; zeros here are placeholders, not quotes. Use strings for exactness (up to 6 decimal places). Keys match by longest prefix, so 'claude-sonnet-5-5' covers dated snapshots. A category with tokens but no rate fails the import: cache writes are never priced at the input rate by default.",
+  "_comment": "USD per million tokens, one rate per token category. Copy to pricing.json and fill in from the providers' current pricing pages; zeros here are placeholders, not quotes. Use strings for exactness (up to 6 decimal places). A key matches its exact model id or a dated snapshot of it ('claude-sonnet-5-5' covers 'claude-sonnet-5-5-20260601' and 'gpt-5' covers 'gpt-5-2026-08-07'); any other suffix is a different model and fails the import as unknown, so 'gpt-5' does not price 'gpt-5-nano'. A category with tokens but no rate fails the import: cache writes are never priced at the input rate by default.",
   "version": "YYYY-MM-DD describe-this-list",
   "as_of": "YYYY-MM-DD",
   "anthropic": {

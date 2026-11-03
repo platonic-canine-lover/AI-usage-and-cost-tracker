@@ -82,6 +82,8 @@ reviewer's model list was out of date. The pricing example still names it.
 | A month appeared only if it had usage or a seat started in it, so a seat paid for since July with no later usage vanished from August on, hiding exactly the waste the report is for. | Every month a seat is active, up to the current month, gets a row. A test checks July to September all appear and October does not once the seat ends. |
 | The DB test harness truncated an existing schema without applying new migrations, so a local run could test a stale view and pass. CI always starts empty, so CI was unaffected. | The harness applies pending migrations whenever this project's runner owns the schema; a Supabase-applied schema is left to Supabase. |
 
+| Model prices matched by prefix, so an unlisted `gpt-5-nano` was priced as `gpt-5` and `claude-opus-5-5-fast` as Opus, defeating the "unknown model fails" rule. | `findPrice` accepts an exact id, or a listed id plus a date suffix (`-20260601`, `-2026-06-01`) and nothing else; an exact key wins over a family key. Tests cover the sibling cases and that the import refuses them. |
+
 The shared fixture was itself the bug case: the one OpenAI seat is Alice's
 but Carol did the work. The old test asserted "not over-subscribed"; it is
 now one idle seat and one user without a seat.

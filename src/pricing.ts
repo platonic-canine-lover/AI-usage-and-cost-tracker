@@ -124,18 +124,25 @@ export async function loadPricing(file: string): Promise<PricingTable> {
 }
 
 /**
- * Longest-prefix match so a dated snapshot ("claude-sonnet-5-5-20260601")
- * resolves to the family entry ("claude-sonnet-5-5") without listing every date.
+ * A dated snapshot of a listed model: "-20260601" (Anthropic) or "-2026-06-01" (OpenAI).
+ * Nothing else may follow the key: "gpt-5-nano" is a different model from "gpt-5", with a
+ * different price, and must be refused as unknown rather than priced as its sibling.
+ */
+const SNAPSHOT_SUFFIX = /^-(\d{8}|\d{4}-\d{2}-\d{2})$/;
+
+/**
+ * Exact match, or the listed model plus a date suffix, so "claude-sonnet-5-5" covers
+ * "claude-sonnet-5-5-20260601" without listing every date. An exact key always wins,
+ * so a dated snapshot that is priced differently can be listed in its own right.
  */
 export function findPrice(table: Pick<PricingTable, "anthropic" | "openai">, provider: Provider, model: string): ModelPrice | undefined {
   const entries = table[provider];
-  let best: { key: string; price: ModelPrice } | undefined;
+  const exact = entries[model];
+  if (exact) return exact;
   for (const [key, price] of Object.entries(entries)) {
-    if (model === key || model.startsWith(key)) {
-      if (!best || key.length > best.key.length) best = { key, price };
-    }
+    if (model.startsWith(key) && SNAPSHOT_SUFFIX.test(model.slice(key.length))) return price;
   }
-  return best?.price;
+  return undefined;
 }
 
 export class UnpricedCategoryError extends Error {

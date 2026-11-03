@@ -112,12 +112,34 @@ describe("OpenAI completions usage parser", () => {
 });
 
 describe("pricing: per-category rates", () => {
-  it("matches the longest prefix so dated snapshots resolve to their family", async () => {
+  it("matches an exact model id, or a dated snapshot of one", async () => {
     const table = await loadPricing(path.join(fixtures, "pricing.test.json"));
     expect(findPrice(table, "anthropic", "claude-sonnet-5-5-20260601")?.input_per_million_usd).toBe(usd("2"));
+    expect(findPrice(table, "openai", "gpt-5-2026-08-07")?.input_per_million_usd).toBe(usd("5"));
     expect(findPrice(table, "openai", "gpt-5-mini")?.input_per_million_usd).toBe(usd("1"));
     expect(findPrice(table, "openai", "gpt-5")?.input_per_million_usd).toBe(usd("5"));
     expect(findPrice(table, "openai", "gpt-9")).toBeUndefined();
+  });
+
+  it("never prices an unlisted model at a sibling's rate", async () => {
+    // Prefix matching priced gpt-5-nano as gpt-5 and claude-opus-5-5-fast as opus: a silent wrong figure.
+    const table = await loadPricing(path.join(fixtures, "pricing.test.json"));
+    for (const model of ["gpt-5-nano", "gpt-5-mini-high", "gpt-5x", "gpt-5-20260", "gpt-5-2026-08"]) {
+      expect(findPrice(table, "openai", model), model).toBeUndefined();
+    }
+    expect(findPrice(table, "anthropic", "claude-opus-5-5-fast")).toBeUndefined();
+    expect(findPrice(table, "anthropic", "claude-opus-5")).toBeUndefined();
+    // and the import refuses it rather than recording a cost
+    const [line] = parseOpenAiUsage(await load("openai-completions-usage.json"));
+    expect(() => priceRecords(table, [{ ...line!, model: "gpt-5-nano" }])).toThrow(UnknownModelError);
+  });
+
+  it("an exact key wins over a family key for a snapshot priced differently", () => {
+    const base = { input_per_million_usd: usd("5"), output_per_million_usd: usd("20") };
+    const snap = { input_per_million_usd: usd("4"), output_per_million_usd: usd("16") };
+    const table = { anthropic: {}, openai: { "gpt-5": base, "gpt-5-2026-08-07": snap } };
+    expect(findPrice(table, "openai", "gpt-5-2026-08-07")).toBe(snap);
+    expect(findPrice(table, "openai", "gpt-5-2026-01-01")).toBe(base);
   });
 
   it("prices each category at its own rate", () => {
