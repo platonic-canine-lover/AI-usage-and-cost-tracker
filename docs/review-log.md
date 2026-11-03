@@ -74,7 +74,7 @@ source; the report prints the basis and warns when anything is unmeasured.
 The reviewer also raised the model id `claude-haiku-5-5`. It is current; the
 reviewer's model list was out of date. The pricing example still names it.
 
-## Review 7 (independent code scan) → commit 10
+## Review 7 (independent code scan) → commits 10 to 12
 
 | Finding | Change |
 | --- | --- |
@@ -83,6 +83,8 @@ reviewer's model list was out of date. The pricing example still names it.
 | The DB test harness truncated an existing schema without applying new migrations, so a local run could test a stale view and pass. CI always starts empty, so CI was unaffected. | The harness applies pending migrations whenever this project's runner owns the schema; a Supabase-applied schema is left to Supabase. |
 
 | Model prices matched by prefix, so an unlisted `gpt-5-nano` was priced as `gpt-5` and `claude-opus-5-5-fast` as Opus, defeating the "unknown model fails" rule. | `findPrice` accepts an exact id, or a listed id plus a date suffix (`-20260601`, `-2026-06-01`) and nothing else; an exact key wins over a family key. Tests cover the sibling cases and that the import refuses them. |
+
+| (found while checking CI for the above) The Supabase job installed CLI `latest`, which moved to 3.0.0 and rejects the `[inbucket]` config section, so the job failed on code that had not changed. | Config uses `[local_smtp]` (accepted by v2 and v3, checked locally against both); the CLI is pinned to 2.122.1 and is bumped deliberately. |
 
 The shared fixture was itself the bug case: the one OpenAI seat is Alice's
 but Carol did the work. The old test asserted "not over-subscribed"; it is

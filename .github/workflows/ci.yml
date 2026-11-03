@@ -37,10 +37,11 @@ jobs:
           cache: pnpm
       - uses: supabase/setup-cli@v1
         with:
-          version: latest
+          # Pinned: "latest" moved to CLI 3.0.0 on its own and broke this job. Bump deliberately.
+          version: 2.122.1
       - run: pnpm install --frozen-lockfile
       # Starts Postgres + Auth + PostgREST and applies supabase/migrations from scratch.
-      - run: supabase start -x studio,imgproxy,inbucket,edge-runtime,logflare,vector
+      - run: supabase start -x studio,imgproxy,mailpit,edge-runtime,logflare,vector
       - run: supabase db reset
       # Migrations must be reproducible: resetting again from zero has to succeed.
       - run: supabase db reset
