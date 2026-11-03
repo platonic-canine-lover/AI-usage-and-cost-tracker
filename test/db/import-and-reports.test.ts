@@ -155,7 +155,15 @@ describe("seat-use report", () => {
   it("compares paid seats with people who actually generated usage", async () => {
     const rows = await seatUseReport(db, { teamId: team, months: 1 });
     const anthropicOct = rows.find((r) => r.provider === "anthropic" && r.month_start === "2026-10-01");
-    expect(anthropicOct).toMatchObject({ paid_seats: 3, active_users: 2, idle_seats: 1, over_subscribed: false });
+    // alice and bob hold seats and used Anthropic; the third seat's holder did not
+    expect(anthropicOct).toMatchObject({
+      paid_seats: 3,
+      active_users: 2,
+      active_seat_holders: 2,
+      idle_seats: 1,
+      active_users_without_seat: 0,
+      over_subscribed: false,
+    });
     expect(anthropicOct!.seat_cost_full_month_micro_usd).toBe(String(60 * MICRO));
     expect(anthropicOct!.seat_cost_prorated_micro_usd).toBe(String(60 * MICRO)); // all three seats active the whole month
     expect(anthropicOct!.usage_cost_micro_usd).toBe(String(9_560_000));
@@ -167,7 +175,15 @@ describe("seat-use report", () => {
     const rows = await seatUseReport(db, { teamId: team, months: 14 });
     const openaiOct = rows.find((r) => r.provider === "openai" && r.month_start === "2025-10-01");
     // key_dave was unmapped: his $1.05 (90k*$5 + 30k*$20)/1M is counted in usage cost but not attributed.
-    expect(openaiOct).toMatchObject({ paid_seats: 1, active_users: 1, over_subscribed: false });
+    // The one OpenAI seat is alice's, but the usage was carol's: alice's seat is idle and carol has none.
+    expect(openaiOct).toMatchObject({
+      paid_seats: 1,
+      active_users: 1,
+      active_seat_holders: 0,
+      idle_seats: 1,
+      active_users_without_seat: 1,
+      over_subscribed: true,
+    });
     expect(openaiOct!.usage_cost_micro_usd).toBe(String(4_200_000));
     expect(openaiOct!.unattributed_cost_micro_usd).toBe(String(1_050_000));
     expect(Number(openaiOct!.attribution_coverage)).toBe(0.5);
@@ -179,7 +195,7 @@ describe("seat-use report", () => {
       "select paid_seats, active_users from seat_use where team_id = $1 and provider = 'openai' and month_start = '2025-10-01'",
       [team],
     );
-    // One paid openai seat (alice) but the usage was from carol (mapped) and dave (unmapped → not counted)
+    // One paid openai seat (alice) but the usage was from carol (mapped) and dave (unmapped, so not counted as a user)
     expect(rows.rows[0]).toEqual({ paid_seats: 1, active_users: 1 });
   });
 
@@ -190,8 +206,61 @@ describe("seat-use report", () => {
     await upsertUsage(db, team, openai, { ...principals, key_dave: newUserId() });
     const rows = await seatUseReport(db, { teamId: team, months: 14 });
     const openaiOct = rows.find((r) => r.provider === "openai" && r.month_start === "2025-10-01");
-    expect(openaiOct).toMatchObject({ paid_seats: 1, active_users: 2, idle_seats: 0, over_subscribed: true });
+    expect(openaiOct).toMatchObject({ paid_seats: 1, active_users: 2, idle_seats: 1, active_users_without_seat: 2, over_subscribed: true });
     expect(Number(openaiOct!.attribution_coverage)).toBe(1);
+  });
+
+  it("counts a seat as idle when its holder did not use it, even if other people did", async () => {
+    // The case the earlier view got wrong: two seat holders who never use the provider,
+    // two people without seats who do. That is two idle seats, not zero.
+    const t = await createTeam(db, newUserId(), "Idle check");
+    const [holder1, holder2, user1, user2] = [newUserId(), newUserId(), newUserId(), newUserId()];
+    await db.query(
+      `insert into seats (team_id, user_id, provider, monthly_cost_micro_usd, active_from)
+         values ($1, $2, 'anthropic', $4, '2026-09-01'), ($1, $3, 'anthropic', $4, '2026-09-01')`,
+      [t, holder1, holder2, 25 * MICRO],
+    );
+    await db.query(
+      `insert into usage_events (team_id, user_id, provider, model, external_id, cost_micro_usd, occurred_at)
+         values ($1, $2, 'anthropic', 'm', 'idle-check-1', 1000, '2026-09-10'), ($1, $3, 'anthropic', 'm', 'idle-check-2', 1000, '2026-09-11')`,
+      [t, user1, user2],
+    );
+    const rows = await seatUseReport(db, { teamId: t, months: 3 });
+    const sep = rows.find((r) => r.month_start === "2026-09-01");
+    expect(sep).toMatchObject({
+      paid_seats: 2,
+      active_users: 2,
+      active_seat_holders: 0,
+      idle_seats: 2,
+      active_users_without_seat: 2,
+      over_subscribed: true,
+    });
+    await db.query("delete from teams where id = $1", [t]); // later tests count every row
+  });
+
+  it("reports every month a seat is paid for, including months with no usage at all", async () => {
+    // A seat since July with usage only in July: August onwards must still appear, fully idle.
+    const t = await createTeam(db, newUserId(), "Quiet months");
+    const holder = newUserId();
+    await db.query("insert into seats (team_id, user_id, provider, monthly_cost_micro_usd, active_from, active_to) values ($1, $2, 'openai', $3, '2026-07-01', '2026-09-30')", [
+      t,
+      holder,
+      20 * MICRO,
+    ]);
+    await db.query(
+      "insert into usage_events (team_id, user_id, provider, model, external_id, cost_micro_usd, occurred_at) values ($1, $2, 'openai', 'm', 'quiet-1', 1000, '2026-07-05')",
+      [t, holder],
+    );
+    const rows = await db.query<{ month_start: string; paid_seats: number; idle_seats: number; seat_cost_full_month_micro_usd: string }>(
+      "select month_start::text, paid_seats, idle_seats, seat_cost_full_month_micro_usd::text from seat_use where team_id = $1 order by month_start",
+      [t],
+    );
+    expect(rows.rows).toEqual([
+      { month_start: "2026-07-01", paid_seats: 1, idle_seats: 0, seat_cost_full_month_micro_usd: String(20 * MICRO) },
+      { month_start: "2026-08-01", paid_seats: 1, idle_seats: 1, seat_cost_full_month_micro_usd: String(20 * MICRO) },
+      { month_start: "2026-09-01", paid_seats: 1, idle_seats: 1, seat_cost_full_month_micro_usd: String(20 * MICRO) },
+    ]); // ends with the seat: no October row
+    await db.query("delete from teams where id = $1", [t]);
   });
 
   it("prorates a seat that was active for only part of the month, and keeps the full-month figure alongside", async () => {

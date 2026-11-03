@@ -52,7 +52,12 @@ export interface SeatRow {
   month_start: string;
   paid_seats: number;
   active_users: number;
+  /** seats whose holder generated usage that month */
+  active_seat_holders: number;
+  /** seats whose holder generated no usage that month */
   idle_seats: number;
+  /** people with attributed usage and no active seat for that provider */
+  active_users_without_seat: number;
   over_subscribed: boolean;
   seat_cost_full_month_micro_usd: string;
   seat_cost_prorated_micro_usd: string;
@@ -72,7 +77,7 @@ export async function seatUseReport(db: Queryable, opts: { teamId?: string; mont
   const months = assertWindow(opts.months ?? 6, "months", 120);
   const res = await db.query<SeatRow>(
     `select s.team_id, t.name as team_name, s.provider::text, s.month_start::text,
-            s.paid_seats, s.active_users, s.idle_seats, s.over_subscribed,
+            s.paid_seats, s.active_users, s.active_seat_holders, s.idle_seats, s.active_users_without_seat, s.over_subscribed,
             s.seat_cost_full_month_micro_usd::text, s.seat_cost_prorated_micro_usd::text, s.usage_cost_micro_usd::text,
             s.unattributed_cost_micro_usd::text, s.attribution_coverage::text
        from seat_use s
@@ -106,7 +111,7 @@ export function renderSeats(rows: SeatRow[]): string {
     const perActive = r.active_users > 0 ? formatUsd(attributed / BigInt(r.active_users)) : "-";
     const coverage = `${Math.round(Number(r.attribution_coverage) * 100)}%`;
     const notes: string[] = [];
-    if (r.over_subscribed) notes.push("more active users than paid seats");
+    if (r.over_subscribed) notes.push(`${r.active_users_without_seat} active without a seat`);
     if (Number(r.attribution_coverage) < 1) notes.push(`${formatUsd(r.unattributed_cost_micro_usd)} unattributed`);
     lines.push(
       `${r.month_start}  ${pad(r.team_name, 20)} ${pad(r.provider, 10)} ${pad(String(r.paid_seats), 5)} ${pad(String(r.active_users), 7)} ${pad(String(r.idle_seats), 5)} ${pad(formatUsd(r.seat_cost_full_month_micro_usd), 12)} ${pad(formatUsd(r.seat_cost_prorated_micro_usd), 12)} ${pad(formatUsd(r.usage_cost_micro_usd), 11)} ${pad(perActive, 11)} ${pad(coverage, 9)} ${notes.join("; ")}`,

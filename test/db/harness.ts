@@ -32,10 +32,12 @@ export async function freshDatabase(): Promise<pg.Client> {
   const client = new pg.Client({ connectionString: connectionString() });
   await client.connect();
   const exists = await client.query("select 1 from pg_tables where schemaname = 'public' and tablename = 'teams'");
+  const ours = await client.query("select 1 from pg_tables where schemaname = 'public' and tablename = 'schema_migrations'");
+  // Our runner applied this schema: apply anything new since, so a local run never
+  // tests a stale view. (Supabase applied it: Supabase is the source of truth, leave it.)
+  if (!exists.rowCount || ours.rowCount) await migrate(client);
   if (exists.rowCount) {
     await client.query("truncate public.teams, public.team_members, public.seats, public.usage_events, public.budgets cascade");
-  } else {
-    await migrate(client);
   }
   return client;
 }

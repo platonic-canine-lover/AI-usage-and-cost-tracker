@@ -74,6 +74,18 @@ source; the report prints the basis and warns when anything is unmeasured.
 The reviewer also raised the model id `claude-haiku-5-5`. It is current; the
 reviewer's model list was out of date. The pricing example still names it.
 
+## Review 7 (independent code scan) → commit 10
+
+| Finding | Change |
+| --- | --- |
+| `idle_seats` was paid seats minus everyone with usage, seat or no seat. Two seat holders who never used the provider plus two people without seats who did reported 0 idle seats. | Migration 000900 counts per seat: a seat is idle when its holder generated no usage that month. New columns `active_seat_holders` and `active_users_without_seat`; `over_subscribed` now means someone used the provider without a seat. A test reproduces the two-holders, two-users case. |
+| A month appeared only if it had usage or a seat started in it, so a seat paid for since July with no later usage vanished from August on, hiding exactly the waste the report is for. | Every month a seat is active, up to the current month, gets a row. A test checks July to September all appear and October does not once the seat ends. |
+| The DB test harness truncated an existing schema without applying new migrations, so a local run could test a stale view and pass. CI always starts empty, so CI was unaffected. | The harness applies pending migrations whenever this project's runner owns the schema; a Supabase-applied schema is left to Supabase. |
+
+The shared fixture was itself the bug case: the one OpenAI seat is Alice's
+but Carol did the work. The old test asserted "not over-subscribed"; it is
+now one idle seat and one user without a seat.
+
 ## What was not done, on purpose
 
 - No reconciliation against a real provider invoice. The README says so.

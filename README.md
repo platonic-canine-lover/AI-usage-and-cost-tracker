@@ -28,7 +28,7 @@ not a product; the section "What this is and is not" draws the line.
 | Importers for the Anthropic Admin usage report and the OpenAI completions usage API; idempotent on re-import, one owning team per record, truncated exports rejected | `src/importers/` | `test/unit/importers.test.ts`, `test/db/import-and-reports.test.ts` |
 | Pricing per token category (input, cache write, extended cache write, cache read, output) from a config file; exact decimal parsing, BigInt arithmetic; version and content hash stamped on every row, full config kept in `pricing_snapshots` | `src/pricing.ts`, `pricing.example.json` | unit tests |
 | Weekly budget cap per team (retrospective), with an `over_cap` flag and a non-zero exit code for pipelines | `weekly_spend` view, `pnpm report weekly` | `test/db/import-and-reports.test.ts` |
-| Seat-use report: paid seats vs people who actually generated usage, per provider per month, with attribution coverage, over-subscription flagged, and both full-month and day-prorated seat cost estimates | `seat_use` view, `pnpm report seats` | same |
+| Seat-use report: per provider per month, which seat holders used it, idle seats (holder had no usage), people using it without a seat, attribution coverage, and both full-month and day-prorated seat cost estimates. Every month a seat is paid for appears, with or without usage | `seat_use` view, `pnpm report seats` | same |
 
 ## The RLS guarantee
 
