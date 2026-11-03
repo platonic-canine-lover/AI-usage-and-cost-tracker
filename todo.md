@@ -54,3 +54,20 @@ Separately, `pnpm audit` without `--prod` reports three critical advisories
 from vitest 2 and its bundled vite. They are dev-only and exploitable only
 while a vitest UI or dev server is running, but they are the first thing
 anyone running `pnpm audit` sees. Upgrading vitest clears them.
+
+## 3. Dev-only minimatch advisory through eslint 9
+
+**Severity:** low (moderate advisory, dev-only). **Where:** `package.json`,
+`eslint` 9.39.5 in `devDependencies`.
+
+**Problem.** eslint 9 and `@eslint/config-array` pull in minimatch 3.1.5,
+which has a moderate advisory (denial of service through globparts
+amplification, fixed in minimatch >= 11.0.1). It is reachable only while
+eslint matches file patterns in this repository, so the exposure is a slow
+or hung lint run, not anything in the shipped code. Found by the monthly
+health check of 3 November 2026. The vitest upgrade in item 2 does not
+clear it.
+
+**Fix.** Upgrade eslint to 10 (a major version; check `eslint.config.*` and
+`typescript-eslint` compatibility), then confirm `pnpm lint` passes and
+`pnpm audit` no longer lists minimatch.
