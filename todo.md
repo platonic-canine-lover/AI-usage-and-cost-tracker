@@ -1,9 +1,10 @@
 # Tech debt
 
-Known issues from the independent code scan of 3 November 2026, not yet
-fixed. Each entry says what is wrong, how it shows up, and the intended fix.
-The scan's other findings were fixed at the time and are recorded in
-`docs/review-log.md`.
+Known issues, not yet fixed. Items 1 to 3 come from the independent code scan
+of 3 November 2026; items 4 to 6 from reading the access policies while
+writing the cross-user security test on 12 November 2026. Each entry says
+what is wrong, how it shows up, and the intended fix. The scan's other
+findings were fixed at the time and are recorded in `docs/review-log.md`.
 
 ## 1. Usage rows are unique per provider, not per team
 
@@ -71,3 +72,61 @@ clear it.
 **Fix.** Upgrade eslint to 10 (a major version; check `eslint.config.*` and
 `typescript-eslint` compatibility), then confirm `pnpm lint` passes and
 `pnpm audit` no longer lists minimatch.
+
+## 4. An admin can demote or remove the team's owner
+
+**Severity:** medium. **Where:** `supabase/migrations/20261016000200_row_level_security.sql`,
+`is_team_admin` and the `team_members_update` and `team_members_delete`
+policies.
+
+**Problem.** `is_team_admin` is true for both `owner` and `admin`, and the
+membership policies check nothing else. So an admin can set the owner's role
+to `member`, delete the owner's membership, or make themselves `owner`. The
+same policies let the last owner leave or be removed, which leaves a team
+that nobody owns. The `owner` role therefore carries no protection that
+`admin` lacks. Not reproduced in a test: it follows from the policy text.
+
+**Fix.** New migration. Only an owner may insert, update or delete a
+membership row whose role is `owner` (old or new value), and an admin may
+not set any role to `owner`. Add a trigger that refuses to remove or demote
+a team's last owner. Tests in `test/db/rls.cross-user.test.ts`: an admin's
+update and delete against the owner affect zero rows; an admin cannot
+promote themselves; the last owner cannot leave.
+
+## 5. A member can record a task outcome under a team-mate's user id
+
+**Severity:** low. **Where:** `supabase/migrations/20261016000600_task_outcomes.sql`,
+`task_outcomes_insert`.
+
+**Problem.** The insert policy checks only that the caller belongs to the
+team. `user_id` is whatever the caller sends, so a plain member can file a
+rejected or slow outcome against a colleague's name, or an accepted one
+against their own model of choice under someone else's. Outcomes feed the
+`task_quality` view and the cost-per-accepted-result line, where a person's
+review time is priced. The row stays inside the team, so nothing leaks; the
+record is simply not trustworthy as to who made it. Not reproduced in a test.
+
+**Fix.** New migration: the insert policy also requires
+`user_id = auth.uid()`, or `user_id is null`, unless the caller is an admin
+(admins and the server-side script record on behalf of others). Consider
+defaulting `user_id` to `auth.uid()`. Test: a member inserting with a
+team-mate's id is refused; with their own id it succeeds.
+
+## 6. A team's creator still sees the team after being removed from it
+
+**Severity:** low. **Where:** `supabase/migrations/20261016000200_row_level_security.sql`,
+`teams_select`.
+
+**Problem.** The policy is `is_team_member(id) or created_by = auth.uid()`.
+The second half is there so that `insert ... returning` works before the
+trigger has added the creator as owner, but it never expires. A creator who
+has left or been removed can still read the team's row: its id, name and
+creation date. They can read none of its members, spend, seats or budget.
+Not reproduced in a test.
+
+**Fix.** Drop the `created_by` clause and make team creation not depend on
+it: either add the creator's membership in a `before insert` step so
+`is_team_member` is already true when `returning` is evaluated, or create
+teams through a `security definer` function that returns the new id. Test:
+after the creator's membership is deleted, `select from teams` returns
+nothing for them, and `createTeam` in the harness still returns the id.
