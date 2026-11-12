@@ -25,6 +25,7 @@ not a product; the section "What this is and is not" draws the line.
 | --- | --- | --- |
 | Versioned schema migrations, run from scratch in CI on local Supabase and on plain Postgres 15, 16 and 17 | `supabase/migrations/` | `.github/workflows/ci.yml` |
 | Row-level security: a member of team A cannot see, count, sum, write to or infer team B's spend | `20261016000200_row_level_security.sql` | `test/db/rls.team-isolation.test.ts` (10 cases) |
+| Cross-user rules inside a team: a plain member reads the team's rows but cannot change them, change who is on the team or raise their own role; an admin's reach stops at their own team; a removed member loses sight at once; a request with no user reads nothing | same migration | `test/db/rls.cross-user.test.ts` (18 cases) |
 | Importers for the Anthropic Admin usage report and the OpenAI completions usage API; idempotent on re-import, one owning team per record, truncated exports rejected | `src/importers/` | `test/unit/importers.test.ts`, `test/db/import-and-reports.test.ts` |
 | Pricing per token category (input, cache write, extended cache write, cache read, output) from a config file; exact decimal parsing, BigInt arithmetic; version and content hash stamped on every row, full config kept in `pricing_snapshots` | `src/pricing.ts`, `pricing.example.json` | unit tests |
 | Weekly budget cap per team (retrospective), with an `over_cap` flag and a non-zero exit code for pipelines | `weekly_spend` view, `pnpm report weekly` | `test/db/import-and-reports.test.ts` |
@@ -55,6 +56,7 @@ transaction with `SET LOCAL ROLE authenticated` and the user's JWT claims in
 ```
 pnpm test:db
 
+ ✓ test/db/rls.cross-user.test.ts (18 tests)
  ✓ test/db/rls.team-isolation.test.ts (10 tests)
  ✓ test/db/import-and-reports.test.ts (14 tests)
 ```
@@ -325,7 +327,7 @@ src/pricing.ts         pricing table, micro-dollar maths
 src/reports/           weekly cap, seat-use and local-alternative queries and renderers
 src/alternatives.ts    local model / machine schema and the time-and-cost estimate
 src/cli.ts             commander CLI
-test/db/               harness.ts, RLS isolation, import and reports
+test/db/               harness.ts, RLS isolation (between teams, and between users), import and reports
 test/unit/             parsers and pricing
 test/fixtures/         synthetic provider exports, test pricing, principal map
 ```
